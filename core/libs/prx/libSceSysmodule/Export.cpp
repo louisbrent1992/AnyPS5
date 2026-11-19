@@ -1,5 +1,6 @@
 #include "prx/libkernel/include/Api.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
+#include "prx/libkernel_sys/include/Api.hpp"
 #include "prx/libSceSysmodule/include/Api.hpp"
 #include <cerrno>
 #include <cstdint>
@@ -47,6 +48,8 @@ bool isMeasuredRejectedInternalId(const std::uint32_t id) {
 }
 
 bool isPublicModuleId(const std::uint16_t id) {
+    static const bool ps4 = sceKernelIsPs4Process() != 0;
+    if (ps4) return findModuleName(id) != nullptr;
     return std::binary_search(std::begin(kPublicModuleIds), std::end(kPublicModuleIds), id);
 }
 
