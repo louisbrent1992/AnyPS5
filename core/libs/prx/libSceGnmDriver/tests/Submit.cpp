@@ -95,6 +95,14 @@ private:
     std::uint8_t* block = nullptr;
 };
 
+void TestRewind() {
+    std::vector<std::uint32_t> draw{Type3(OpNop, 1), 0x11u, Type3(0x59, 1), 0x80000000u, Type3(OpNop, 1), 0x22u, Type3(0x59, 1), 0u, Type3(OpNop, 1), 0x33u};
+    GnmDriver::RewindTail tail;
+    const std::vector<std::uint32_t> released{Type3(OpNop, 1), 0x11u, Type3(OpNop, 1), 0x22u};
+    Require(GnmDriver::MergeEngines(draw, {}, &tail) == released, "a released REWIND was not dropped or an unreleased one did not end the stream");
+    Require(tail.control == &draw[7] && tail.rest.data() == &draw[8] && tail.rest.size() == 2, "an unreleased REWIND did not return the words after it");
+}
+
 void TestIndirectBuffers() {
     GuestBlock block;
     auto* words = reinterpret_cast<std::uint32_t*>(&block.Data());
@@ -173,6 +181,7 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string(argv[1]) == "--packets") {
             TestPackets();
             TestIndirectBuffers();
+            TestRewind();
             std::puts("GnmDriver packet tests passed");
             return 0;
         }

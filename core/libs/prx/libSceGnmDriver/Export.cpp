@@ -2,6 +2,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <deque>
+#include <functional>
+#include <optional>
 #include <thread>
 #include <atomic>
 #include <bit>
@@ -22,6 +25,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Queues/SubmissionRing.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include "prx/libSceAgcDriver/Eq/include/Event.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Acb.hpp"
@@ -303,7 +307,7 @@ std::uint64_t g_drawCounter = 0;
 
 namespace GnmDriver {
 
-std::vector<std::uint32_t> MergeEngines(std::span<const std::uint32_t> dcb, std::span<const std::uint32_t> ccb) {
+std::vector<std::uint32_t> MergeEngines(std::span<const std::uint32_t> dcb, std::span<const std::uint32_t> ccb, RewindTail* tail) {
     std::vector<std::uint32_t> out;
     out.reserve(dcb.size() + ccb.size());
     std::size_t constant = 0;
@@ -328,22 +332,10 @@ std::vector<std::uint32_t> MergeEngines(std::span<const std::uint32_t> dcb, std:
             }
         }
     };
-    // A title may still be writing a buffer's last packets on another thread while it submits: the
-    // console's GPU reads them later. A header that is not a PM4 packet yet is read again for a while.
-    // ponytail: a 50 ms poll per such header; parse on a GPU-side thread if titles need longer.
-    const auto settledPacketAt = [](std::span<const std::uint32_t> words, std::size_t at) {
-        for (int tries = 0;; ++tries) {
-            try {
-                return PacketAt(words, at, "draw command buffer");
-            } catch (const std::runtime_error&) {
-                if (tries == 500) throw;
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
-            }
-        }
-    };
-    const auto runDraw = [&](auto& self, std::span<const std::uint32_t> words, std::uint32_t level) -> void {
+    // Returns true when an unreleased REWIND ends the stream.
+    const auto runDraw = [&](auto& self, std::span<const std::uint32_t> words, std::uint32_t level) -> bool {
         for (std::size_t draw = 0; draw < words.size();) {
-            const auto packet = settledPacketAt(words, draw);
+            const auto packet = PacketAt(words, draw, "draw command buffer");
             draw += packet.size();
             if (IsFiller(packet[0])) continue;
             switch (Opcode(packet[0])) {
@@ -362,14 +354,22 @@ std::vector<std::uint32_t> MergeEngines(std::span<const std::uint32_t> dcb, std:
                     const std::size_t count = packet[3] & IndirectBufferWords;
                     const auto* target = reinterpret_cast<const std::uint32_t*>(static_cast<std::uintptr_t>(packet[1] & ~3u) | (static_cast<std::uintptr_t>(packet[2] & 0xffffu) << 32));
                     AgcDriverCheckGuestMemory_nid_postfix(target, count * sizeof(std::uint32_t), alignof(std::uint32_t));
-                    self(self, {target, count}, chain ? level : level + 1);
-                    if (chain) return;
+                    if (self(self, {target, count}, chain ? level : level + 1) || chain) return true;
                     break;
+                }
+                case OpRewind: {
+                    // The words after a released REWIND are already written, so the packet itself is dropped.
+                    if (packet.size() != 2) throw std::runtime_error("GnmDriver: invalid REWIND size");
+                    if ((std::atomic_ref<const std::uint32_t>(packet[1]).load(std::memory_order_acquire) & AgcDriver::Pm4::RewindValid) != 0) break;
+                    if (!tail || level != 0) NotImplemented_nid_no_patch("an unreleased REWIND in a called draw command buffer");
+                    *tail = {&packet[1], words.subspan(draw)};
+                    return true;
                 }
                 default:
                     Lower(out, packet);
             }
         }
+        return false;
     };
     runDraw(runDraw, dcb, 0);
     runConstant(false);
@@ -406,22 +406,81 @@ ComputeRing& MappedRing(std::uint32_t id, const char* unmapped) {
     return g_rings[id - 1];
 }
 
-void SubmitLocked(std::uint32_t count, std::uint32_t* const* dcbs, const std::uint32_t* dcbBytes, std::uint32_t* const* ccbs, const std::uint32_t* ccbBytes) {
+// While the draw engine is stalled on an unreleased REWIND, later submissions and sceGnmSubmitDone
+// wait behind it, in order, as they would on the console's ring; the submitting thread does not.
+std::optional<GnmDriver::RewindTail> g_rewindTail;
+std::deque<std::function<void()>> g_behindRewind;
+
+void SubmitMerged(std::vector<std::uint32_t>& commands) {
     static FrameStart frameStart;
-    static const bool waitIdle = std::getenv("APS5_GNM_SUBMIT_WAIT_IDLE") != nullptr;
-    if (waitIdle && g_workQueued) AgcDriverWaitIdle_nid_postfix();
-    std::vector<std::vector<std::uint32_t>> merged;
-    for (std::uint32_t i = 0; i < count; ++i) {
-        const auto constantWords = ccbBytes ? ccbBytes[i] / 4 : 0;
-        merged.push_back(GnmDriver::MergeEngines({dcbs[i], dcbBytes[i] / 4}, {constantWords != 0 ? ccbs[i] : nullptr, constantWords}));
-    }
     if (!g_frameStarted) {
         UseGcnShaders();
         AgcDriverSubmitGraphics_nid_postfix(frameStart.words, frameStart.size);
         g_frameStarted = true;
     }
-    for (auto& commands : merged) AgcDriverSubmitGraphics_nid_postfix(commands.data(), static_cast<std::uint32_t>(commands.size()));
+    AgcDriverSubmitGraphics_nid_postfix(commands.data(), static_cast<std::uint32_t>(commands.size()));
     g_workQueued = true;
+}
+
+void SubmitLocked(std::uint32_t count, std::uint32_t* const* dcbs, const std::uint32_t* dcbBytes, std::uint32_t* const* ccbs, const std::uint32_t* ccbBytes);
+
+void RunBehindRewind(std::function<void()> work) {
+    if (g_rewindTail) g_behindRewind.push_back(std::move(work));
+    else work();
+}
+
+// Waits for the stalled REWIND, then lowers and submits what follows it and the work queued behind.
+void ReleaseRewindTails() {
+    for (;;) {
+        const auto* control = g_rewindTail->control;
+        g_submitMutex.unlock();
+        while ((std::atomic_ref<const std::uint32_t>(*control).load(std::memory_order_acquire) & AgcDriver::Pm4::RewindValid) == 0)
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        g_submitMutex.lock();
+        GnmDriver::RewindTail next;
+        auto commands = GnmDriver::MergeEngines(g_rewindTail->rest, {}, &next);
+        g_rewindTail.reset();
+        SubmitMerged(commands);
+        if (next.control) g_rewindTail = next;
+        while (!g_rewindTail && !g_behindRewind.empty()) {
+            auto work = std::move(g_behindRewind.front());
+            g_behindRewind.pop_front();
+            work();
+        }
+        if (!g_rewindTail) return;
+    }
+}
+
+void SubmitLocked(std::uint32_t count, std::uint32_t* const* dcbs, const std::uint32_t* dcbBytes, std::uint32_t* const* ccbs, const std::uint32_t* ccbBytes) {
+    if (g_rewindTail) {
+        std::vector<std::uint32_t*> dcbList(dcbs, dcbs + count);
+        std::vector<std::uint32_t> dcbSizes(dcbBytes, dcbBytes + count);
+        std::vector<std::uint32_t*> ccbList;
+        std::vector<std::uint32_t> ccbSizes;
+        if (ccbs) ccbList.assign(ccbs, ccbs + count);
+        if (ccbBytes) ccbSizes.assign(ccbBytes, ccbBytes + count);
+        g_behindRewind.push_back([dcbList = std::move(dcbList), dcbSizes = std::move(dcbSizes), ccbList = std::move(ccbList), ccbSizes = std::move(ccbSizes), count] {
+            SubmitLocked(count, dcbList.data(), dcbSizes.data(), ccbList.empty() ? nullptr : ccbList.data(), ccbSizes.empty() ? nullptr : ccbSizes.data());
+        });
+        return;
+    }
+    static const bool waitIdle = std::getenv("APS5_GNM_SUBMIT_WAIT_IDLE") != nullptr;
+    if (waitIdle && g_workQueued) AgcDriverWaitIdle_nid_postfix();
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const auto constantWords = ccbBytes ? ccbBytes[i] / 4 : 0;
+        GnmDriver::RewindTail tail;
+        auto commands = GnmDriver::MergeEngines({dcbs[i], dcbBytes[i] / 4}, {constantWords != 0 ? ccbs[i] : nullptr, constantWords}, &tail);
+        SubmitMerged(commands);
+        if (!tail.control) continue;
+        g_rewindTail = tail;
+        if (i + 1 < count) SubmitLocked(count - i - 1, dcbs + i + 1, dcbBytes + i + 1, ccbs ? ccbs + i + 1 : nullptr, ccbBytes ? ccbBytes + i + 1 : nullptr);
+        // ponytail: one detached waiter per stall; the GPU-side ring thread if stalls become frequent.
+        std::thread([] {
+            std::lock_guard lock(g_submitMutex);
+            ReleaseRewindTails();
+        }).detach();
+        return;
+    }
 }
 
 std::uintptr_t BufferLabel(std::uint32_t handle, std::uint32_t index) {
@@ -773,7 +832,7 @@ int APS5_VABI sceGnmSubmitAndFlipCommandBuffers(std::uint32_t count, std::uint32
 
 int APS5_VABI sceGnmSubmitDone() {
     std::lock_guard lock(g_submitMutex);
-    g_frameStarted = false;
+    RunBehindRewind([] { g_frameStarted = false; });
     return 0;
 }
 
