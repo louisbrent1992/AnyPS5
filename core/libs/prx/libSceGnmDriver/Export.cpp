@@ -502,6 +502,100 @@ int APS5_VABI sceGnmSetHsShader(std::uint32_t* cmd, std::uint32_t size, const st
     return 0;
 }
 
+// The Update forms take the Set forms' packet layout and write the same register packets: the AGC
+// driver applies only real register packets, so NOP-wrapped context writes would be lost.
+int APS5_VABI sceGnmUpdateVsShader_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
+    return sceGnmSetVsShader(cmd, size, regs, modifier);
+}
+
+int APS5_VABI sceGnmUpdateGsShader_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
+    return sceGnmSetGsShader(cmd, size, regs);
+}
+
+int APS5_VABI sceGnmUpdateHsShader_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t lsHsConfig) {
+    constexpr std::uint32_t RegisterWords = 18;
+    if (!cmd || size < 0x1d || size > 0x40 || !regs || regs[1] != 0) return -1;
+    cmd = Emit(cmd, OpSetShReg, {0x108, regs[0], 0});
+    cmd = Emit(cmd, OpSetShReg, {0x10a, regs[2], regs[3]});
+    cmd = Emit(cmd, OpSetContextReg, {0x286, regs[5], regs[6]});
+    cmd = SetRegisters(cmd, OpSetContextReg, {{0x2db, regs[4]}, {0x2d6, lsHsConfig}});
+    Nop(cmd, size - RegisterWords - 1);
+    return 0;
+}
+
+// SDK 3.50 also enables every CB_SHADER_MASK channel for a null pixel shader.
+int APS5_VABI sceGnmSetPsShader350_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
+    if (regs || !cmd || size <= 0x27) return sceGnmSetPsShader(cmd, size, regs);
+    cmd = Emit(cmd, OpSetShReg, {8, 0, 0});
+    cmd = SetRegisters(cmd, OpSetContextReg, {{0x203, 0}, {0x8f, 0xf}});
+    Nop(cmd, 0x1d);
+    return 0;
+}
+
+int APS5_VABI sceGnmUpdatePsShader350_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
+    return sceGnmSetPsShader350_nid_disambig1(cmd, size, regs);
+}
+
+int APS5_VABI sceGnmSetCsShaderWithModifier_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
+    if (!cmd || size <= 0x18 || !regs || regs[1] != 0 || (modifier & 0xfffffc3fu) != 0) return -1;
+    const std::uint32_t rsrc1 = modifier == 0 ? regs[2] : (regs[2] & 0xfffffc3fu) | modifier;
+    cmd = Emit(cmd, OpSetShReg, {0x20c, regs[0], 0});
+    cmd = Emit(cmd, OpSetShReg, {0x212, rsrc1, regs[3]});
+    cmd = Emit(cmd, OpSetShReg, {0x207, regs[4], regs[5], regs[6]});
+    Nop(cmd, 11);
+    return 0;
+}
+
+int APS5_VABI sceGnmDispatchDirect_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, std::uint32_t threadsX, std::uint32_t threadsY, std::uint32_t threadsZ, std::uint32_t flags) {
+    if (!cmd || size != 9 || static_cast<std::int32_t>(threadsX | threadsY | threadsZ) < 0) return -1;
+    cmd = Emit(cmd, 0x15, {threadsX, threadsY, threadsZ, (flags & 0x18u) + 1u}, true);
+    cmd[-5] |= flags & 1u;
+    Nop(cmd, 3);
+    return 0;
+}
+
+int APS5_VABI sceGnmDispatchIndirect_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t flags) {
+    if (!cmd || size != 7) return -1;
+    cmd = Emit(cmd, 0x16, {dataOffset, (flags & 0x18u) + 1u}, true);
+    cmd[-3] |= flags & 1u;
+    Nop(cmd, 3);
+    return 0;
+}
+
+int APS5_VABI sceGnmDispatchIndirectOnMec_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, std::uint64_t args, std::uint32_t modifier) {
+    if (!cmd || size != 8 || args == 0 || (args & 3) != 0) return -1;
+    cmd = Emit(cmd, 0x16, {static_cast<std::uint32_t>(args), static_cast<std::uint32_t>(args >> 32), (modifier & 0x18u) | 1u}, true);
+    cmd[-4] |= modifier & 1u;
+    Nop(cmd, 3);
+    return 0;
+}
+
+int APS5_VABI sceGnmComputeWaitOnAddress_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, std::uint64_t address, std::uint32_t mask, std::uint32_t compare, std::uint32_t reference) {
+    if (!cmd || size != 14) return -1;
+    const bool memory = address > 0xffff;
+    cmd = Nop(cmd, 3);
+    cmd = Emit(cmd, OpWaitRegMem, {(memory ? 1u << 4 : 0u) | (compare & 7u), static_cast<std::uint32_t>(address & (memory ? 0xfffffffcu : 0xffffu)), static_cast<std::uint32_t>(address >> 32), reference, mask, 10});
+    Nop(cmd, 2);
+    return 0;
+}
+
+int APS5_VABI sceGnmComputeWaitSemaphore_nid_disambig1(std::uint32_t* cmd, std::uint32_t size, std::uint64_t semaphoreAddress, std::uint32_t flags) {
+    if (!cmd || size != 10) return -1;
+    cmd = Nop(cmd, 3);
+    cmd = Emit(cmd, 0x39, {static_cast<std::uint32_t>(semaphoreAddress), (flags == 1 ? 0x100000u : 0u) - 0x20000000u + static_cast<std::uint32_t>(semaphoreAddress >> 32)});
+    Nop(cmd, 2);
+    return 0;
+}
+
+int APS5_VABI sceGnmGetPhysicalCounterFromVirtualized_nid_disambig1(void) {
+    return Failure;
+}
+
+int APS5_VABI sceGnmLogicalTcaUnitToPhysical_nid_disambig1(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
 int APS5_VABI sceGnmSetLsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
     if (!cmd || size < 0x17 || !regs) return -1;
     const std::uint32_t mask = (modifier & 0xfffffc3fu) == 0 ? 0xfffffc3fu : 0xfcfffc3fu;

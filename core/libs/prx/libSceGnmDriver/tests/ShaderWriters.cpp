@@ -121,6 +121,20 @@ void TestLs() {
     Require(sceGnmSetLsShader(words.data(), 0x100, Regs, 0x40) == 0 && words[9] == (Regs[2] | 0x40), "the local shader modifier was not merged");
 }
 
+void TestPs4Writers() {
+    for (const std::uint32_t size : {0x1du, 0x1eu}) {
+        auto words = Fresh();
+        Require(sceGnmUpdateHsShader_nid_disambig1(words.data(), size, Regs, 0x77) == 0, "the hull shader update failed");
+        Require(words[16] == 0x2d6 && words[17] == 0x77 && WholePackets(words.data(), size) && words[size] == Untouched, "the hull shader update does not fill its reservation exactly");
+    }
+    auto words = Fresh();
+    Require(sceGnmSetPsShader350_nid_disambig1(words.data(), 0x28, nullptr) == 0, "the 3.50 null pixel shader failed");
+    Require(words[7] == Header(0x69, 2) && words[8] == 0x8f && words[9] == 0xf && WholePackets(words.data(), 40) && words[40] == Untouched, "the 3.50 null pixel shader does not enable CB_SHADER_MASK");
+    words = Fresh();
+    Require(sceGnmDispatchDirect_nid_disambig1(words.data(), 9, 4, 2, 1, 0x9) == 0, "the direct dispatch failed");
+    Require(words[0] == (Header(0x15, 4) | 3u) && words[1] == 4 && words[4] == 0x9 && WholePackets(words.data(), 9), "the direct dispatch packet is wrong");
+}
+
 }  // namespace
 
 int main() {
@@ -132,6 +146,7 @@ int main() {
         TestGs();
         TestHs();
         TestLs();
+        TestPs4Writers();
         std::puts("gnm shader writer tests passed");
         return 0;
     } catch (const std::exception& error) {
