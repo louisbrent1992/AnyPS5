@@ -166,6 +166,7 @@ int main(int argc, char** argv) {
         translateOptions.waveSize = request.context.waveSize;
         translateOptions.userDataBaseRegister = request.context.userDataBaseRegister;
         translateOptions.gcnLegacyVertexInputs = GcnGuestShaders() && request.context.userDataBaseRegister == 0u;
+        if (request.graphics) translateOptions.instanceStepRates = request.graphics->instanceStepRates;
         translateOptions.userDataCount = static_cast<std::uint32_t>(request.context.userData.size());
         translateOptions.scratchDwords = request.context.compute.has_value() ? request.context.compute->scratchDwords : 0u;
         const auto sharedVectors = GuestSharedVectorRegisters(request.context);

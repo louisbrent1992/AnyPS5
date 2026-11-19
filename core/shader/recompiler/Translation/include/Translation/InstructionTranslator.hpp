@@ -42,6 +42,7 @@ struct TranslateOptions {
     bool float32DenormPreserve = false;
     bool float64 = false;
     bool gcnLegacyVertexInputs = false;
+    std::array<std::uint32_t, 2> instanceStepRates{1u, 1u};
     bool nativeFloat16Fma = false;
     bool float16HostNans = false;
     bool nativeInteger16 = false;

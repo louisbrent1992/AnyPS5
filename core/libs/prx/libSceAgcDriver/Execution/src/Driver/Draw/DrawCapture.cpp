@@ -172,12 +172,25 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
     require(pushOffset <= Graphics::PushBlockBytes(fixedSlots), "stage push constant offset exceeds the pipeline push constant block");
     const bool hasFragment = std::ranges::any_of(programs, [](const DrawProgram& value) { return value.binary.stage == Stage::Fragment; });
     const auto pushBytes = Graphics::StagePushBudget(Graphics::StagePushLimit(graphics.stages, pushOffset, graphics.depthRemap.mode != 0u), pushOffset, program.binary.stage, fixedSlots, hasFragment);
+    // A legacy GCN vertex program reads instance / VGT_INSTANCE_STEP_RATE_0/1 in v1 and v2 when
+    // SPI_SHADER_PGM_RSRC1_VS.VGPR_COMP_CNT asks for them.
+    std::array<std::uint32_t, 2> instanceStepRates{1u, 1u};
+    if (graphics.stages.legacyVertex && program.binary.stage == Stage::Vertex) {
+        const auto resource = queue.shader.find(0x4a);
+        const auto components = resource == queue.shader.end() ? 0u : (resource->second >> 24u) & 3u;
+        for (std::uint32_t r = 0; r < 2u && r < components; ++r) {
+            const auto rate = queue.context.find(0x2a8 + r);
+            // ponytail: rate 0 (the CLEAR_STATE value, set when a program only wants v3) divides by 1;
+            // find the hardware result if a title reads v1/v2 with rate 0.
+            if (rate != queue.context.end() && rate->second != 0u) instanceStepRates[r] = rate->second;
+        }
+    }
     ShaderRecompiler::RecompileRequest request{
         program.binary,
         {waveSize, program.firstUserSgpr, program.userData, std::nullopt, program.binary.stage == Stage::Fragment ? std::optional(pixel) : std::nullopt, vertexInfos[i], memory, RegisteredFloatMode(*program.snapshot)},
         localDevice->Target(),
         {0, 0, pushOffset, pushBytes},
-        ShaderRecompiler::GraphicsCompileContext{program.firstUserSgpr, linked, Graphics::StageMeshConfiguration(graphics.stages, program.binary.stage), graphics.stages.tessellation, {drawParameters.indexAddress, drawParameters.indexCount, drawParameters.indexSize, drawParameters.instanceCount}, program.binary.stage == Stage::Mesh ? meshBarycentrics : std::nullopt}
+        ShaderRecompiler::GraphicsCompileContext{program.firstUserSgpr, linked, Graphics::StageMeshConfiguration(graphics.stages, program.binary.stage), graphics.stages.tessellation, {drawParameters.indexAddress, drawParameters.indexCount, drawParameters.indexSize, drawParameters.instanceCount}, program.binary.stage == Stage::Mesh ? meshBarycentrics : std::nullopt, instanceStepRates}
     };
     const auto waitedBefore = traceCapSync() || profile ? Graphics::Recorder::ThreadWaitedMs() : 0.0;
     auto invocation = [&] {

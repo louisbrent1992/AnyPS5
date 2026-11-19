@@ -504,6 +504,9 @@ struct GraphicsCompileContext {
     std::optional<TessellationConfiguration> tessellation;
     GraphicsDrawParameters draw;
     std::optional<MeshBarycentricLayout> meshBarycentrics;
+    // GCN VGT_INSTANCE_STEP_RATE_0/1: a legacy vertex program's v1 and v2 hold the instance index
+    // divided by these.
+    std::array<std::uint32_t, 2> instanceStepRates{1u, 1u};
 };
 
 struct RecompileRequest {

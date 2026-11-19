@@ -1382,12 +1382,6 @@ ShaderStages DecodeShaderStages(const QueueState& queue, bool vertexWorkgroup) {
     };
     if (path == ShaderPath::Vertex && ShaderRecompiler::GcnGuestShaders() && (value & 0x2000u) == 0) {
         validate(value == 0, "GCN vertex routing other than a plain VS is unsupported");
-        const auto unitStepRate = [&](std::uint32_t offset) {
-            const auto rate = find(queue.context, offset);
-            return rate == queue.context.end() || rate->second == 1u;
-        };
-        const auto components = (read(queue.shader, 0x4a, RegisterBank::Shader) >> 24u) & 3u;
-        validate(components == 0 || (unitStepRate(0x2a8) && (components == 1 || unitStepRate(0x2a9))), "GCN vertex instance step rates other than 1 are not implemented");
         result.legacyVertex = true;
     } else if (path == ShaderPath::Vertex) {
         validate((value & 0x2000u) != 0, "legacy vertex routing without PRIMGEN_EN is unsupported");

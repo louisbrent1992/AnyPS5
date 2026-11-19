@@ -526,7 +526,11 @@ void emitEntryPrologue(IrProgram& program, IrBlock& entryBlock, const TranslateO
         }
         if (options.gcnLegacyVertexInputs) {
             setVector(static_cast<VectorReg>(0), drawIndex(StageInputKind::VertexIndex));
-            for (std::uint32_t reg = 1u; reg <= 3u; reg++) setVector(static_cast<VectorReg>(reg), drawIndex(StageInputKind::InstanceIndex));
+            for (std::uint32_t reg = 1u; reg <= 3u; reg++) {
+                IrValue& instance = drawIndex(StageInputKind::InstanceIndex);
+                const auto rate = reg < 3u ? options.instanceStepRates[reg - 1u] : 1u;
+                setVector(static_cast<VectorReg>(reg), rate == 1u ? instance : entryIr.Emit(IrOpcode::UDiv32, IrOpcodeType(IrOpcode::UDiv32), {&instance, &entryIr.Constant(rate)}));
+            }
         } else {
             setVector(static_cast<VectorReg>(5), drawIndex(StageInputKind::VertexIndex));
             setVector(static_cast<VectorReg>(8), drawIndex(StageInputKind::InstanceIndex));
