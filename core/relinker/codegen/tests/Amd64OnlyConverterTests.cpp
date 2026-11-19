@@ -555,6 +555,10 @@ void converterSegment() {
     require(result.Bytes == expected, "Converter changed bytes other than the MOVNTSS opcode");
     const auto untouched = converter->Convert(Bytes(0x300, 0x90), {segmentHeader(0x100)});
     require(untouched.ReplacedCount == 0 && untouched.Trampolines.empty() && untouched.Reports.empty() && untouched.Bytes == Bytes(0x300, 0x90), "Segment without AMD-only instructions was changed");
+    auto trailingData = file;
+    std::fill(trailingData.begin() + 0x214, trailingData.begin() + 0x224, std::uint8_t{0x66});
+    requireFailure([&] { (void)converter->Convert(trailingData, {segmentHeader(0x24)}); }, "Data after the code was decoded as an instruction");
+    require(converter->Convert(trailingData, {segmentHeader(0x24)}, {segmentHeader(20)}).Trampolines.size() == 1, "Code segment bounds did not stop the scan before the data");
     auto branchInside = file;
     branchInside[0x207] = 0x02;
     requireFailure([&] { (void)converter->Convert(branchInside, {segmentHeader(20)}); }, "Branch into an AMD-only instruction was accepted");

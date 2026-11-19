@@ -257,7 +257,8 @@ public:
 
     [[nodiscard]] ConvertResult Convert(
         std::vector<std::uint8_t> fileBytes,
-        const std::vector<Domain::ProgramHeader>& segments
+        const std::vector<Domain::ProgramHeader>& segments,
+        const std::vector<Domain::ProgramHeader>& codeSegments
     ) const override;
 
 private:
@@ -502,18 +503,20 @@ void Amd64OnlyConverter::_convertSegment(
 
 ConvertResult Amd64OnlyConverter::Convert(
     std::vector<std::uint8_t> fileBytes,
-    const std::vector<Domain::ProgramHeader>& segments
+    const std::vector<Domain::ProgramHeader>& segments,
+    const std::vector<Domain::ProgramHeader>& codeSegments
 ) const {
     ConvertResult result{};
+    const auto& scanned = codeSegments.empty() ? segments : codeSegments;
     std::uint64_t total = 0;
-    for (const auto& ph : segments) {
+    for (const auto& ph : scanned) {
         if (ph.Type != kLoadSegment || (ph.Flags & kExecutableSegment) == 0) continue;
         if (ph.FileSize > (std::numeric_limits<std::uint64_t>::max() - total) / 3) throw CodegenException("Instruction conversion progress size overflow");
         total += 3 * ph.FileSize;
     }
     if (progress) progress(0, total);
     std::uint64_t completed = 0;
-    for (const auto& ph : segments) {
+    for (const auto& ph : scanned) {
         if (ph.Type != kLoadSegment || (ph.Flags & kExecutableSegment) == 0) continue;
         _convertSegment(fileBytes, ph, segments, result, completed, total);
         completed += 3 * ph.FileSize;

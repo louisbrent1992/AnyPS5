@@ -21,6 +21,7 @@
 #include <codegen/IAmd64OnlyConverter.hpp>
 #include <codegen/x86/RedZoneFramer.hpp>
 #include <relinker/analysis/UnusedNidFilter/EhFrameReader.hpp>
+#include <relinker/analysis/SceCodeExtent.hpp>
 #include <map>
 #include <codegen/CodegenException.hpp>
 #include <algorithm>
@@ -72,7 +73,8 @@ ConversionOutput Conversion::Convert(ConversionInput input, const ConversionOpti
     std::vector<Codegen::TrampolineSite> trampolines;
     if (options.ToIntel) {
         const auto segments = Relinker::ElfReader(sourceBytes).ReadProgramHeaders();
-        auto converted = Codegen::MakeAmd64OnlyConverter(Codegen::Amd64OnlyTargetFor(options.ToRosetta, options.ToAvx), [&](auto completed, auto total) { inputProgress.Report({Domain::ProgressStage::Lowering, {}, completed, total}); })->Convert(std::move(sourceBytes), segments);
+        const auto codeSegments = Relinker::SceCodeSegments(sourceBytes, segments);
+        auto converted = Codegen::MakeAmd64OnlyConverter(Codegen::Amd64OnlyTargetFor(options.ToRosetta, options.ToAvx), [&](auto completed, auto total) { inputProgress.Report({Domain::ProgressStage::Lowering, {}, completed, total}); })->Convert(std::move(sourceBytes), segments, codeSegments);
         sourceBytes = std::move(converted.Bytes);
         trampolines = std::move(converted.Trampolines);
         GamePatch::CheckOverlaps(options.TargetName, patchedRanges, {.Reports = converted.Reports, .Trampolines = trampolines});
