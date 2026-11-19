@@ -10552,7 +10552,9 @@ void verifyUnnormalizedSamplers() {
     const auto reject = [&](std::uint32_t mimg, const std::array<std::uint32_t, 16>& data, const char* reason, const char* what) {
         expectFailure([&] { static_cast<void>(recompile(program(mimg), data)); }, reason, what);
     };
-    reject(0xf0bc0f08u, imageData(unnormalized, Type2D, Format32Float, 0u), "unnormalized guest sampler is used with depth comparison, which is not implemented", "unnormalized samplers: image_sample_c_lz was accepted");
+    const auto compared = recompile(program(0xf0bc0f08u), imageData(unnormalized, Type2D, Format32Float, 0u));
+    require(proven(compared, false), "unnormalized samplers: image_sample_c_lz kept an unnormalized host sampler, which cannot compare");
+    require(std::ranges::any_of(compared.bindings, [](const auto& binding) { return binding.role == DescriptorRole::GuestSamplers && binding.samplerCoordinatesIgnored == std::vector<bool>{true}; }), "unnormalized samplers: image_sample_c_lz does not create its host sampler normalized");
     reject(0xf11c0108u, userData(unnormalized), "unnormalized guest sampler is used by a gather, which is not implemented", "unnormalized samplers: image_gather4_lz was accepted");
     reject(0xf1800308u, userData(unnormalized), "unnormalized guest sampler is used by image_get_lod, which is not implemented", "unnormalized samplers: image_get_lod was accepted");
     reject(0xf0800f09u, userData(unnormalized), "unnormalized guest sampler is used by an image_sample_*_a variant, which is not implemented", "unnormalized samplers: image_sample_a was accepted");

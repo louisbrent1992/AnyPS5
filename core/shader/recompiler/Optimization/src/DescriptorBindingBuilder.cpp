@@ -24,7 +24,8 @@ static_assert(PipelineSpecialization::MipCountBase + ShaderInfo::MaxImages <= Pi
 static_assert(PipelineSpecialization::StoreQuantizeBase + ShaderInfo::MaxImages * PipelineSpecialization::StoreQuantizeWords <= PipelineSpecialization::DescriptorIndexBase);
 static_assert(PipelineSpecialization::CompareBase + ShaderInfo::MaxImages * PipelineSpecialization::CompareWords <= PipelineSpecialization::FoldOffsetBase);
 static_assert(PipelineSpecialization::FoldOffsetBase + ShaderInfo::MaxSamplers <= PipelineSpecialization::UnnormalizedBaseLevelBase);
-static_assert(PipelineSpecialization::UnnormalizedBaseLevelBase + ShaderInfo::MaxSamplers <= PipelineSpecialization::MirrorUnnormalizedBase);
+static_assert(PipelineSpecialization::UnnormalizedBaseLevelBase + ShaderInfo::MaxSamplers <= PipelineSpecialization::UnnormalizedCompareBase);
+static_assert(PipelineSpecialization::UnnormalizedCompareBase + ShaderInfo::MaxSamplers <= PipelineSpecialization::MirrorUnnormalizedBase);
 static_assert(PipelineSpecialization::MirrorUnnormalizedBase + ShaderInfo::MaxSamplers <= PipelineSpecialization::MinLodBase);
 static_assert(PipelineSpecialization::MinLodBase + ShaderInfo::MaxImages <= PipelineSpecialization::SamplerLodBiasBase);
 static_assert(PipelineSpecialization::SamplerLodBiasBase + ShaderInfo::MaxSamplers <= PipelineSpecialization::FmaskFormatBase);
@@ -301,10 +302,11 @@ struct UnnormalizedProof {
     std::vector<bool> imagesAtBaseLevel;
     std::vector<bool> samplersIgnoreCoordinates;
     std::vector<std::uint32_t> mirroredAxes;
+    std::vector<bool> comparesInShader;
 };
 
 UnnormalizedProof ProveUnnormalized(const ShaderInfo& info, const ResourceSnapshot& snapshot) {
-    UnnormalizedProof proof{std::vector<bool>(info.samplers.size()), std::vector<bool>(info.images.size()), std::vector<bool>(info.images.size()), std::vector<bool>(info.samplers.size()), std::vector<std::uint32_t>(info.samplers.size())};
+    UnnormalizedProof proof{std::vector<bool>(info.samplers.size()), std::vector<bool>(info.images.size()), std::vector<bool>(info.images.size()), std::vector<bool>(info.samplers.size()), std::vector<std::uint32_t>(info.samplers.size()), std::vector<bool>(info.samplers.size())};
     for (std::uint32_t r = 0; r < info.samplers.size(); r++) {
         if (snapshot.samplers.at(r).dwordCount != 4u) fail("sampler descriptor must contain four dwords");
         const auto& sampler = info.samplers[r];
@@ -322,6 +324,18 @@ UnnormalizedProof ProveUnnormalized(const ShaderInfo& info, const ResourceSnapsh
             if (sampler.foldTexelOffsetsOnly) {
                 fail("DescriptorBindingBuilder::Populate normalized guest sampler is used with a texel offset that is not a constant, which image sampling takes only with VK_KHR_maintenance8 and shaderImageGatherExtended");
             }
+            continue;
+        }
+        if (ComparesIfUnnormalized(sampler)) {
+            for (const auto& pair : info.sampledPairs) {
+                if (pair.sampler != r) continue;
+                const auto& base = info.images.at(pair.image);
+                if (base.table != NoTable) failUnnormalized("samples an image selected at run time");
+                const auto& image = info.runtimeImageModes.at(pair.image).at(ResourceMaterializer::RuntimeImageMode(base, snapshot.images.at(pair.image), info.runtimeImageModes.at(pair.image)));
+                if (image.dimension != RdnaImageDimension::Dim2D || image.cube || image.layerRows) failUnnormalized("is used with depth comparison on an image that is not one 2D layer");
+            }
+            proof.samplersIgnoreCoordinates[r] = true;
+            proof.comparesInShader[r] = true;
             continue;
         }
         const std::uint32_t unsupported = sampler.uses & ~static_cast<std::uint32_t>(SamplerUseExplicitLod | SamplerUseOffset | SamplerUseNonZeroLod);
@@ -446,6 +460,7 @@ DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& l
     for (std::uint32_t index = 0; index < info.samplers.size(); ++index) {
         if (FoldsTexelOffsets(info.samplers[index])) plan.specialization.push_back({PipelineSpecialization::FoldOffsetBase + index, unnormalized.samplers[index] ? 1u : 0u});
         if (SamplesBaseLevelIfUnnormalized(info.samplers[index])) plan.specialization.push_back({PipelineSpecialization::UnnormalizedBaseLevelBase + index, unnormalized.samplers[index] ? 1u : 0u});
+        if (ComparesIfUnnormalized(info.samplers[index])) plan.specialization.push_back({PipelineSpecialization::UnnormalizedCompareBase + index, unnormalized.comparesInShader[index] ? 1u : 0u});
         if (MirrorsIfUnnormalized(info.samplers[index])) plan.specialization.push_back({PipelineSpecialization::MirrorUnnormalizedBase + index, unnormalized.mirroredAxes[index]});
         if (info.samplers[index].table != NoTable) continue;
         const auto bias = unnormalized.samplers[index] ? 0.0f : static_cast<float>(static_cast<std::int32_t>((snapshot.samplers.at(index).dwords[2] & 0x3fffu) ^ 0x2000u) - 0x2000) / 256.0f;

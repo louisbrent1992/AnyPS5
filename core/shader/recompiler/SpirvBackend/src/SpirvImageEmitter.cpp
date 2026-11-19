@@ -2054,7 +2054,20 @@ void EmitSampleOp(SpirvValueEmitContext& ctx, const ImageEmitAccess& access, con
     std::uint32_t sample = 0;
     const bool alreadyBaseLevel = !hasOffset && opcode == spv::OpImageSampleExplicitLod && operandMask == spv::ImageOperandsLodMask && !HasFlag(mem, RdnaImageSampleFlagLod) && setup.layout.clamp == NoImageComponent;
     const bool baseLevelIfUnnormalized = !setup.dref && !alreadyBaseLevel && SamplesBaseLevelIfUnnormalized(state.program.Info().samplers.at(mem.sampler));
-    if (baseLevelIfUnnormalized) {
+    const bool compareIfUnnormalized = setup.dref && !hasOffset && setup.dimensionInfo.spatialComponents == 2u && access.image.dimension == RdnaImageDimension::Dim2D && !access.image.cube && ComparesIfUnnormalized(state.program.Info().samplers.at(mem.sampler));
+    if (compareIfUnnormalized) {
+        const auto selector = state.module.SpecializationConstant(TypeU32(state), PipelineSpecialization::UnnormalizedCompareBase + mem.sampler, 0u);
+        const auto normalizes = Binary(state, spv::OpINotEqual, TypeBool(state), selector, ConstantU32(state, 0u));
+        sample = EmitValueIfElse(state, normalizes, resultType, [&] {
+            state.module.EmitCapability(spv::CapabilityImageQuery);
+            const auto size = state.module.AllocateId();
+            state.module.AddFunction(spv::OpImageQuerySizeLod, TypeU32Vector(state, 2), size, LoadSampledImageDescriptor(state, mem.resource), ConstantU32(state, 0u));
+            const auto extent = Unary(state, spv::OpConvertUToF, TypeF32Vector(state, 2), size);
+            return emitDirectSample(Binary(state, spv::OpFDiv, TypeF32Vector(state, 2), setup.coord, extent), spv::ImageOperandsLodMask, {ZeroF32(state)}, spv::OpImageSampleDrefExplicitLod);
+        }, [&] {
+            return emitBiasedSample(setup.coord, operandMask, operands, opcode);
+        });
+    } else if (baseLevelIfUnnormalized) {
         const auto selector = state.module.SpecializationConstant(TypeU32(state), PipelineSpecialization::UnnormalizedBaseLevelBase + mem.sampler, 0u);
         const auto unnormalized = Binary(state, spv::OpINotEqual, TypeBool(state), selector, ConstantU32(state, 0u));
         sample = EmitValueIfElse(state, unnormalized, resultType, [&] {
