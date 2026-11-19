@@ -927,9 +927,9 @@ int APS5_VABI sceGnmInsertThreadTraceMarker_nid_disambig1(void) {
     return 0;
 }
 
-int APS5_VABI sceGnmMapComputeQueueWithPriority_nid_disambig1(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+// ponytail: the host has no compute queue priorities; the priority is dropped.
+int APS5_VABI sceGnmMapComputeQueueWithPriority_nid_disambig1(std::uint32_t pipe, std::uint32_t queue, void* ring, std::uint32_t ringSizeInDwords, void* readOffset, std::uint32_t) {
+    return sceGnmMapComputeQueue(pipe, queue, ring, ringSizeInDwords, readOffset);
 }
 
 int APS5_VABI sceGnmRequestFlipAndSubmitDoneForWorkload_nid_disambig1(void) {
