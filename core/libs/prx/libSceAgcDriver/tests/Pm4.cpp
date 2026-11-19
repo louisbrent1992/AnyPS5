@@ -337,6 +337,11 @@ void testAutoDraw() {
     check(AgcDriver::Pm4::ResolveDraw(makePacket(0x2d, {0, 2}), state).indexCount == 0, "empty auto draw rejected");
     state.userConfig.erase(0x24a);
     expectFailure([&] { AgcDriver::Pm4::ResolveDraw(makePacket(0x2d, {1, 2}), state); }, "GE_INDX_OFFSET");
+    ShaderRecompiler::SetGcnGuestShaders(true);
+    state.context[0x102] = 9;
+    const bool gcnOffset = AgcDriver::Pm4::ResolveDraw(makePacket(0x2d, {1, 2}), state).firstVertex == 9;
+    ShaderRecompiler::SetGcnGuestShaders(false);
+    check(gcnOffset, "a PS4 draw did not take its index offset from VGT_INDX_OFFSET (context 0x102)");
 }
 
 void testIndexedDraw() {

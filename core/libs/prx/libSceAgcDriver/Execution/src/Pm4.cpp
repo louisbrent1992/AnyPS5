@@ -977,6 +977,17 @@ std::uint32_t indexSizeOf(const QueueState& queue) {
     return indexSize;
 }
 
+std::uint32_t indexOffsetRegister(const QueueState& queue) {
+    if (ShaderRecompiler::GcnGuestShaders()) {
+        if (const auto context = queue.context.find(0x102); context != queue.context.end()) return context->second;
+        const auto user = queue.userConfig.find(0x24a);
+        return user == queue.userConfig.end() ? 0u : user->second;
+    }
+    const auto offset = queue.userConfig.find(0x24a);
+    require(offset != queue.userConfig.end(), "missing GE_INDX_OFFSET register");
+    return offset->second;
+}
+
 DrawParameters resolveIndirectDraw(std::span<const std::uint32_t> packet, const QueueState& queue) {
     const auto opcode = (packet[0] >> 8u) & 0xffu;
     const bool indexed = opcode == 0x25 || opcode == 0x38;
@@ -1001,10 +1012,8 @@ DrawParameters resolveIndirectDraw(std::span<const std::uint32_t> packet, const 
     // The counts are unknown here (the CP takes them from the record; NUM_INSTANCES is ignored).
     DrawParameters draw{0, 0, 0, 0, packet.back() & 0x20u, indexed, 0, 0};
     if (!indexed) {
-        const auto offset = queue.userConfig.find(0x24a);
-        require(offset != queue.userConfig.end(), "missing GE_INDX_OFFSET register");
-        draw.firstVertex = offset->second;
-        indirect.indxOffset = offset->second;
+        draw.firstVertex = indexOffsetRegister(queue);
+        indirect.indxOffset = draw.firstVertex;
     } else {
         const auto indexSize = indexSizeOf(queue);
         draw.indexAddress = queue.indexBase;
@@ -1056,9 +1065,7 @@ DrawParameters ResolveDraw(std::span<const std::uint32_t> packet, const QueueSta
     Validate(packet, 0);
     if (IndirectDrawOpcode((packet[0] >> 8u) & 0xffu)) return resolveIndirectDraw(packet, queue);
     if (((packet[0] >> 8u) & 0xffu) == 0x2d) {
-        const auto offset = queue.userConfig.find(0x24a);
-        require(offset != queue.userConfig.end(), "missing GE_INDX_OFFSET register");
-        const auto firstVertex = offset->second;
+        const auto firstVertex = indexOffsetRegister(queue);
         require(packet[1] == 0 || firstVertex <= std::numeric_limits<std::uint32_t>::max() - (packet[1] - 1u), "auto draw vertex range overflow");
         return {0, packet[1], 0, queue.instanceCount, packet[2] & 0x20u, false, firstVertex, 0};
     }
@@ -1076,9 +1083,7 @@ DrawParameters ResolveDraw(std::span<const std::uint32_t> packet, const QueueSta
     require(bytes <= std::numeric_limits<std::size_t>::max(), "index range size overflow");
     GuestMemory::CheckRange(reinterpret_cast<const void*>(address), static_cast<std::size_t>(bytes), indexSize);
     APS5_LOG_OUT_DEBUG("ResolveDraw context targetMask=0x%x shaderMask=0x%x indexCount=%u indexType=%u instances=%u", queue.context.contains(0x8e) ? queue.context.at(0x8e) : 0u, queue.context.contains(0x8f) ? queue.context.at(0x8f) : 0u, count, queue.indexType, queue.instanceCount);
-    const auto indexOffset = queue.userConfig.find(0x24a);
-    require(indexOffset != queue.userConfig.end(), "missing GE_INDX_OFFSET register");
-    return {address, count, indexSize, queue.instanceCount, packet.back(), true, indexOffset->second, 0};
+    return {address, count, indexSize, queue.instanceCount, packet.back(), true, indexOffsetRegister(queue), 0};
 }
 
 std::vector<std::uint32_t> ReadIndirectRegisters(std::span<const std::uint32_t> packet) {
