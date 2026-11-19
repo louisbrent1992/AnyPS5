@@ -2526,7 +2526,10 @@ void Color1555TargetTests() {
     queue.context[0x1e0] = (1u << 30u) | 13u;
     Require(AgcDriver::Graphics::DecodeState(queue).blendConstants == std::array<float, 4>{0.375f, 0.25f, 0.125f, 0.5f}, "a 1_5_5_5 target did not exchange its red and blue blend constants with the export");
     queue.context[0x1e0] = 0;
-    for (const auto& [number, swap] : {std::pair{1u, 0u}, std::pair{4u, 0u}, std::pair{0u, 1u}}) {
+    queue.context[0x31c] |= 1u << 11u;
+    const auto alternate = AgcDriver::Graphics::DecodeState(queue);
+    Require(alternate.colors[0].format == VK_FORMAT_A1R5G5B5_UNORM_PACK16 && alternate.colors[0].componentMapping == 0xe4u, "a 1_5_5_5 target with the alternate component order did not render through A1R5G5B5 unswapped");
+    for (const auto& [number, swap] : {std::pair{1u, 0u}, std::pair{4u, 0u}, std::pair{0u, 2u}}) {
         queue.context[0x31c] = (queue.context[0x31c] & ~((7u << 8u) | (3u << 11u))) | (number << 8u) | (swap << 11u);
         expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "unsupported color format 17 number type " + std::to_string(number) + " component swap " + std::to_string(swap));
     }
