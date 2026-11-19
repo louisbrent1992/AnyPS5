@@ -118,6 +118,8 @@ constexpr bool IsGcnMicroTiled(TextureTileMode mode) {
     return mode == TextureTileMode::kGcnThin1D || mode == TextureTileMode::kGcnDisplay1D || mode == TextureTileMode::kGcnThick1D;
 }
 
+TextureTileMode GcnTileModeFromIndex(std::uint32_t index);
+
 constexpr bool IsGcnDepthTiled(TextureTileMode mode) {
     return mode == TextureTileMode::kGcnDepth2D64 || mode == TextureTileMode::kGcnDepth2D128 || mode == TextureTileMode::kGcnDepth2D256 || mode == TextureTileMode::kGcnDepth2D512 || mode == TextureTileMode::kGcnDepth2D1K
         || mode == TextureTileMode::kGcnDepthPrt256 || mode == TextureTileMode::kGcnDepthPrt1K;

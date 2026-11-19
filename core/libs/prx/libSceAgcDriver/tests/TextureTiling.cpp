@@ -2,6 +2,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/ColorTargetLayout.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DccMetadata.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestTextureResource.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/MultisampleTextureLayout.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureFormat.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureSwizzleEquations.hpp"
@@ -11,6 +12,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <span>
 #include <stdexcept>
@@ -617,8 +619,27 @@ void sizeOnlySurfaceTests() {
 
 }
 
+void gcnMultisampleTilingTests() {
+    const auto color = GcnTiling(TextureTileMode::kGcnThin2D, 4u, 4u);
+    Require(color.splitSlices == 2u, "a 4-fragment 32-bit PS4 color tile is not split in two at its 512-byte tile split");
+    const MultisampleTextureLayout layout(color, 4u, 4u, 256u, 128u, 0u);
+    Require(layout.Bytes() == ColorTargetLayout(256u, 128u, ColorTileMode::GcnThin2D, 4u).Bytes() * 4u, "a PS4 multisampled color footprint is not four single-sample footprints");
+    Require(layout.Offset(1u, 0u, 0u, 0u) == 4u && layout.Offset(0u, 0u, 0u, 1u) == 32768u, "a PS4 color fragment does not follow the 64 pixels of the fragment before it above the pipe and bank bits");
+    std::vector<std::byte> linear(layout.LinearBytes()), tiled(layout.Bytes()), back(layout.LinearBytes());
+    for (std::size_t index = 0; index < linear.size() / 4u; ++index) {
+        const auto value = static_cast<std::uint32_t>(index);
+        std::memcpy(linear.data() + index * 4u, &value, sizeof(value));
+    }
+    layout.Tile(linear, tiled);
+    layout.Detile(tiled, back);
+    Require(back == linear, "PS4 multisampled color addresses are not one-to-one");
+    const MultisampleTextureLayout depth(GcnTiling(TextureTileMode::kGcnDepth2D128, 4u, 2u), 4u, 2u, 64u, 64u, 0u);
+    Require(depth.Offset(0u, 0u, 0u, 1u) == 4u && depth.Offset(1u, 0u, 0u, 0u) == 8u, "PS4 depth fragments are not interleaved per pixel");
+}
+
 void RunTextureTilingTests() {
     gcnTilingTests();
+    gcnMultisampleTilingTests();
     gcnThickTilingTests();
     sizeOnlySurfaceTests();
     {

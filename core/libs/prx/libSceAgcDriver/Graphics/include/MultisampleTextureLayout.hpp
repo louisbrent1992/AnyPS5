@@ -10,11 +10,14 @@
 
 namespace AgcDriver::Graphics {
 
+struct GcnTileGeometry;
+
 class MultisampleTextureLayout {
 public:
     static constexpr std::uint32_t Alignment = 65536u;
 
     MultisampleTextureLayout(TextureTileMode tileMode, std::uint32_t elementBytes, std::uint32_t fragments, std::uint32_t width, std::uint32_t height, std::uint32_t layers, std::uint32_t pipeBankXor = 0);
+    MultisampleTextureLayout(const GcnTileGeometry& geometry, std::uint32_t elementBytes, std::uint32_t fragments, std::uint32_t width, std::uint32_t height, std::uint32_t pipeBankXor);
     std::uint64_t Bytes() const { return sliceBytes * layers; }
     std::uint64_t SliceBytes() const { return sliceBytes; }
     std::uint64_t LinearBytes() const { return static_cast<std::uint64_t>(width) * height * layers * fragments * elementBytes; }
@@ -43,11 +46,13 @@ private:
     std::uint32_t pitch;
     std::uint32_t paddedHeight;
     std::uint64_t sliceBytes;
-    std::array<std::uint32_t, 16> inverseBlockEquation;
+    std::uint32_t blockBytes = Alignment;
+    std::array<std::uint32_t, 16> inverseBlockEquation{};
     std::vector<std::uint32_t> xOffsets;
     std::vector<std::uint32_t> yOffsets;
     std::vector<std::uint32_t> layerOffsets;
     std::vector<std::uint32_t> fragmentOffsets;
+    std::vector<std::uint64_t> fragmentSlices;
 };
 
 std::vector<std::byte> ExpandPagedSnapshot(std::size_t bytes, std::span<const std::uint32_t> words, std::span<const std::size_t> starts, std::span<const std::byte> stored, std::size_t pageBytes, std::size_t repeated);

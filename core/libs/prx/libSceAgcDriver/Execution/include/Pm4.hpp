@@ -192,6 +192,8 @@ inline constexpr std::uint64_t SampleDumpBlocks = 16;
 inline constexpr std::uint64_t SampleDumpStride = 16;
 inline constexpr std::uint64_t SampleDumpBlockBytes = 8;
 inline constexpr std::uint64_t SampleDumpBytes = (SampleDumpBlocks - 1) * SampleDumpStride + SampleDumpBlockBytes;
+std::uint64_t SampleDumpBlockCount();
+std::uint64_t SampleDumpSpan();
 inline bool SampleDump(std::span<const std::uint32_t> packet) { return ((packet[0] >> 8u) & 0xffu) == 0x46u && packet.size() >= 2 && (packet[1] & 0x3fu) == SampleDumpEvent; }
 inline std::uint64_t SampleDumpAddress(std::span<const std::uint32_t> packet) { return packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u); }
 struct PacketStore {

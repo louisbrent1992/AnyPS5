@@ -523,8 +523,9 @@ std::vector<TileMipLayout> ComputeGcnMipLayout(TextureTileMode tileMode, std::ui
     return mips;
 }
 
-GcnTileGeometry GcnTiling(TextureTileMode tileMode, std::uint32_t bytesPerElement) {
+GcnTileGeometry GcnTiling(TextureTileMode tileMode, std::uint32_t bytesPerElement, std::uint32_t fragments) {
     Require(IsGcnTiled(tileMode), "PS4 tile geometry needs a PS4 tiled mode");
+    Require(fragments == 1u || ((fragments == 2u || fragments == 4u || fragments == 8u) && (tileMode == TextureTileMode::kGcnThin2D || tileMode == TextureTileMode::kGcnDisplay2D || (IsGcnDepthTiled(tileMode) && !IsGcnPrtTiled(tileMode)))), "PS4 multisampled tiling is modeled only for 2, 4 or 8 fragments in 2D thin, display or depth modes, not " + std::to_string(fragments) + " fragments in tile mode " + std::to_string(static_cast<std::uint32_t>(tileMode)));
     Require(std::has_single_bit(bytesPerElement) && bytesPerElement <= 16u, "unsupported bytes per element for PS4 tiling");
     const auto x = [](std::uint32_t bit) { return 1u << bit; };
     const auto y = [](std::uint32_t bit) { return 1u << (12u + bit); };
@@ -537,6 +538,12 @@ GcnTileGeometry GcnTiling(TextureTileMode tileMode, std::uint32_t bytesPerElemen
     const bool displayOrder = tileMode == TextureTileMode::kGcnDisplay1D || tileMode == TextureTileMode::kGcnDisplay2D || tileMode == TextureTileMode::kGcnDisplayPrt || tileMode == TextureTileMode::kGcnDisplay2DPrt;
     const auto& order = displayOrder ? display[log2Bytes] : thin;
     const auto microBytes = 64u * bytesPerElement;
+    const auto log2Fragments = static_cast<std::uint32_t>(std::countr_zero(fragments));
+    std::array<std::uint32_t, 9> sampled{};
+    const bool depthSamples = IsGcnDepthTiled(tileMode);
+    std::copy(order.begin(), order.end(), sampled.begin() + (depthSamples ? log2Fragments : 0u));
+    for (std::uint32_t bit = 0; bit < log2Fragments; ++bit) sampled[(depthSamples ? 0u : order.size()) + bit] = 1u << (24u + bit);
+    const auto sampledBits = static_cast<std::uint32_t>(order.size()) + log2Fragments;
     GcnTileGeometry geometry{};
     if (tileMode == TextureTileMode::kGcnThick1D) {
         const auto z = [](std::uint32_t bit) { return 1u << (24u + bit); };
@@ -568,7 +575,7 @@ GcnTileGeometry GcnTiling(TextureTileMode tileMode, std::uint32_t bytesPerElemen
     const bool splitRotation = tileMode != TextureTileMode::kGcnDisplayPrt && tileMode != TextureTileMode::kGcnThinPrt;
     const bool pipe8x16 = tileMode == TextureTileMode::kGcnDisplayPrt || tileMode == TextureTileMode::kGcnThinPrt;
     const bool insideMacroTile = pipe8x16;
-    const auto tileBytes = std::min(tileSplit, microBytes);
+    const auto tileBytes = std::min(tileSplit, microBytes * fragments);
     const auto log2TileBytes = static_cast<std::uint32_t>(std::countr_zero(tileBytes));
     const auto& mode = (prt ? prtMacroModes : macroModes)[log2TileBytes - 6u];
     constexpr std::uint32_t pipes = 8u, log2Pipes = 3u, pipeInterleaveBits = 8u;
@@ -580,10 +587,10 @@ GcnTileGeometry GcnTiling(TextureTileMode tileMode, std::uint32_t bytesPerElemen
     Require(macroBytes % 256u == 0, "PS4 macro tile is not a whole number of pipe interleaves");
     geometry.blockBytes = macroBytes * pipes * mode.banks;
     const auto elementBits = log2TileBytes - log2Bytes;
-    geometry.splitSlices = microBytes / tileBytes;
-    for (auto bit = elementBits; bit < order.size(); ++bit) geometry.splitMasks[bit - elementBits] = order[bit];
+    geometry.splitSlices = microBytes * fragments / tileBytes;
+    for (auto bit = elementBits; bit < sampledBits; ++bit) geometry.splitMasks[bit - elementBits] = sampled[bit];
     std::array<std::uint32_t, 16> inner{};
-    for (std::uint32_t bit = 0; bit < elementBits; ++bit) inner[log2Bytes + bit] = order[bit];
+    for (std::uint32_t bit = 0; bit < elementBits; ++bit) inner[log2Bytes + bit] = sampled[bit];
     auto innerBits = log2TileBytes;
     for (std::uint32_t bit = 0; bit < log2BankHeight; ++bit) inner[innerBits++] = y(3u + bit);
     const auto pipe = pipe8x16 ? std::array<std::uint32_t, 3>{x(4) | y(3) | x(5), x(3) | y(4), x(5) | y(5)} : std::array<std::uint32_t, 3>{x(3) | y(3) | x(4), x(4) | y(4), x(5) | y(5)};
@@ -668,7 +675,19 @@ SurfaceGeometry describeGcnVolume(const GuestTextureResource& descriptor) {
 SurfaceGeometry describeGcnSurface(const GuestTextureResource& descriptor) {
     Require(!IsGcnThick(descriptor.tileMode) || descriptor.dimension == TextureDimension::k3D, "PS4 thick tile modes are only implemented for 3D textures");
     if (IsGcnThick(descriptor.tileMode)) return describeGcnVolume(descriptor);
-    Require(descriptor.dimension != TextureDimension::k2DMsaa, "PS4 multisampled textures are not implemented");
+    if (descriptor.dimension == TextureDimension::k2DMsaa) {
+        Require(descriptor.baseArray == 0u && descriptor.depthOrLastArray == 0u && descriptor.mipCount == 1u && descriptor.baseLevel == 0u && descriptor.lastLevel == 0u, "PS4 multisampled texture arrays and mips are not implemented");
+        const auto bytesPerElement = BytesPerElement(descriptor.format);
+        const auto tiling = GcnTiling(descriptor.tileMode, bytesPerElement, descriptor.samples);
+        const auto blocksPerRow = (descriptor.gcnPitch + tiling.blockWidth - 1u) / tiling.blockWidth;
+        const auto blockRows = (descriptor.height + tiling.blockHeight - 1u) / tiling.blockHeight;
+        SurfaceGeometry geometry;
+        geometry.guestBytes = static_cast<std::uint64_t>(blocksPerRow) * blockRows * tiling.blockBytes * tiling.splitSlices;
+        geometry.layerBytes = geometry.guestBytes;
+        geometry.sliceLinearBytes = static_cast<std::uint64_t>(descriptor.width) * descriptor.height * descriptor.samples * bytesPerElement;
+        geometry.mips.push_back({0u, geometry.guestBytes, 0u, geometry.sliceLinearBytes, descriptor.width, descriptor.height, blocksPerRow, descriptor.gcnPitch * descriptor.samples * bytesPerElement, false, 0u, 0u});
+        return geometry;
+    }
     const bool volume = descriptor.dimension == TextureDimension::k3D;
     const bool layered = volume || descriptor.dimension == TextureDimension::k2DArray || descriptor.dimension == TextureDimension::k1DArray || descriptor.dimension == TextureDimension::kCube;
     SurfaceGeometry geometry;

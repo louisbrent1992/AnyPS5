@@ -1,3 +1,4 @@
+#include "RdnaDecoder/RdnaInstructionDecoder.hpp"
 #include "prx/libSceAgcDriver/Execution/include/AsyncLog.hpp"
 #include "prx/libc/include/HostThread.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
@@ -206,9 +207,11 @@ constexpr std::uint32_t SampleCounterPushBytes = 24;
 constexpr std::uint32_t SegmentSlots = 128;
 constexpr std::uint32_t SegmentFoldCapacity = 1024;
 constexpr std::uint32_t DumpFoldCapacity = 1024;
-constexpr std::uint32_t SampleDumpBytes = 15 * 16 + 8;
+std::uint32_t sampleDumpBlocks() {
+    return ShaderRecompiler::GcnGuestShaders() ? 8u : 16u;
+}
 constexpr VkDeviceSize DumpListOffset = 16 + 8 * SegmentFoldCapacity;
-constexpr std::uint32_t SampleDumpPushBytes = 40;
+constexpr std::uint32_t SampleDumpPushBytes = 48;
 std::atomic<std::uint64_t> dumpsQueued{0}, dumpsQueuedInPass{0}, dumpsAtOnce{0}, segmentsClosed{0}, dumpFolds{0};
 
 struct SamplePoolCache {
@@ -2900,7 +2903,7 @@ bool Recorder::gpuSampleCounter() {
 }
 
 std::uint64_t Recorder::Batch::StoreRun::Queued::End() const {
-    return address + (dumpTarget != 0 ? SampleDumpBytes : bytes.size());
+    return address + (dumpTarget != 0 ? (sampleDumpBlocks() - 1u) * 16u + 8u : bytes.size());
 }
 
 std::vector<std::size_t> Recorder::QueuedWriteOrder(std::span<const QueuedWrite> writes) {
@@ -3096,7 +3099,9 @@ void Recorder::dispatchDumps(VkCommandBuffer commands, std::uint32_t firstDump, 
         std::uint32_t firstSegment;
         std::uint32_t lastSegment;
         std::uint32_t phase;
-    } parameters{sampleCounter->DeviceAddress(), sampleCounter->DeviceAddress() + DumpListOffset, firstDump, dumps, firstSegment, lastSegment, 0u};
+        std::uint32_t blocks;
+        std::uint32_t reserved;
+    } parameters{sampleCounter->DeviceAddress(), sampleCounter->DeviceAddress() + DumpListOffset, firstDump, dumps, firstSegment, lastSegment, 0u, sampleDumpBlocks(), 0u};
     static_assert(sizeof(parameters) == SampleDumpPushBytes);
     const auto push = function(cmdPushConstants, "vkCmdPushConstants");
     const auto dispatch = function(cmdDispatch, "vkCmdDispatch");

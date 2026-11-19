@@ -99,6 +99,11 @@ std::uint64_t address(std::uint32_t low, std::uint32_t high) {
     return low | (static_cast<std::uint64_t>(high) << 32u);
 }
 
+std::pair<std::uint32_t, std::uint64_t> predicationFields(std::span<const std::uint32_t> packet) {
+    if (ShaderRecompiler::GcnGuestShaders() && packet.size() == 3) return {packet[2] & ~0xffu, packet[1] | (static_cast<std::uint64_t>(packet[2] & 0xffu) << 32u)};
+    return {packet[1], address(packet[2], packet[3])};
+}
+
 using GcnSystemCounterTicks = std::chrono::duration<std::uint64_t, std::ratio<1, 800000000>>;
 
 const auto GcnSystemCounterStart = std::chrono::steady_clock::now();
@@ -382,12 +387,13 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
         case 0x12: graphics(); size(2); require((packet[1] & ~0xfu) == 0, "unsupported CLEAR_STATE payload bits"); break;
         case 0x20: {
             graphics();
-            size(4);
-            const auto operation = (packet[1] >> 16u) & 7u;
+            size(ShaderRecompiler::GcnGuestShaders() ? 3 : 4);
+            const auto [properties, predicated] = predicationFields(packet);
+            const auto operation = (properties >> 16u) & 7u;
             require(operation != 2, "GPU primitive-count predication is not implemented");
             require(operation == 0 || operation == 1 || operation == 3 || operation == 4, "invalid predication operation");
-            require((packet[1] & ~0x71100u) == 0, "unsupported SET_PREDICATION bits");
-            if (operation != 0) require(address(packet[2], packet[3]) != 0 && (packet[2] & 0xfu) == 0, "unaligned predication address");
+            require((properties & ~0x71100u) == 0, "unsupported SET_PREDICATION bits");
+            if (operation != 0) require(predicated != 0 && (predicated & 0xfu) == 0, "unaligned predication address");
             break;
         }
         case 0x3f: size(4); break;
@@ -491,6 +497,11 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
                     graphics();
                     size(2);
                     require(eventIndex == 0, "invalid stream-out statistics event index");
+                    break;
+                case 0x38:
+                    graphics();
+                    size(4);
+                    require(eventIndex == 1 && packet[3] == 0u && (packet[2] & 0x1ffu) == 0u && ((packet[2] >> 9u) & 3u) == 2u && ((packet[2] >> 11u) & 0xffffu) == (1u << SampleDumpBlockCount()) - 1u && (packet[2] >> 27u) == 0u, "PIXEL_PIPE_STAT_CONTROL other than counter 0 at a 16-byte stride over every DB is not implemented");
                     break;
                 case 0x39:
                     graphics();
@@ -693,8 +704,16 @@ std::size_t ConditionalWords(std::span<const std::uint32_t> packet) {
     return packet[4] & ConditionalWordsMask;
 }
 
+std::uint64_t SampleDumpBlockCount() {
+    return ShaderRecompiler::GcnGuestShaders() ? 8u : SampleDumpBlocks;
+}
+
+std::uint64_t SampleDumpSpan() {
+    return (SampleDumpBlockCount() - 1u) * SampleDumpStride + SampleDumpBlockBytes;
+}
+
 std::size_t PredicationBytes(const Predication& predication) {
-    if (predication.operation == 1) return SampleDumpBytes + SampleDumpBlockBytes;
+    if (predication.operation == 1) return SampleDumpSpan() + SampleDumpBlockBytes;
     return predication.operation == 3 ? 8 : 4;
 }
 
@@ -707,7 +726,7 @@ bool PredicationPasses(const QueueState& queue) {
         std::array<std::uint64_t, SampleDumpBlocks * SampleDumpStride / sizeof(std::uint64_t)> words{};
         GuestMemory::Read(predication.address, std::as_writable_bytes(std::span(words)).first(PredicationBytes(predication)), 8);
         std::uint64_t samples = 0;
-        for (std::uint64_t db = 0; db < SampleDumpBlocks; ++db) {
+        for (std::uint64_t db = 0; db < SampleDumpBlockCount(); ++db) {
             const auto begin = words[db * SampleDumpStride / sizeof(std::uint64_t)];
             const auto end = words[db * SampleDumpStride / sizeof(std::uint64_t) + 1];
             if ((begin & ready) == 0 || (end & ready) == 0) {
@@ -878,7 +897,7 @@ std::vector<PacketStore> DecodeStores(std::span<const std::uint32_t> packet) {
             if (!SampleDump(packet)) return {};
             require(packet.size() == 4, "invalid EVENT_WRITE sample dump size");
             std::vector<PacketStore> stores;
-            for (std::uint64_t block = 0; block < SampleDumpBlocks; ++block) stores.push_back(runTime(SampleDumpAddress(packet) + block * SampleDumpStride, SampleDumpBlockBytes));
+            for (std::uint64_t block = 0; block < SampleDumpBlockCount(); ++block) stores.push_back(runTime(SampleDumpAddress(packet) + block * SampleDumpStride, SampleDumpBlockBytes));
             return stores;
         }
         default: return {};
@@ -1190,8 +1209,9 @@ void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
             queue.ClearContext(); return;
         case 0x13: queue.indexBufferSize = packet[1]; return;
         case 0x20: {
-            const auto operation = (packet[1] >> 16u) & 7u;
-            queue.predication = {operation == 0 ? 0 : address(packet[2], packet[3]), operation, (packet[1] & 0x100u) != 0, (packet[1] & 0x1000u) != 0};
+            const auto [properties, predicated] = predicationFields(packet);
+            const auto operation = (properties >> 16u) & 7u;
+            queue.predication = {operation == 0 ? 0 : predicated, operation, (properties & 0x100u) != 0, (properties & 0x1000u) != 0};
             return;
         }
         case 0x3f: throw std::runtime_error(std::string(UnsupportedReason(packet[0])));

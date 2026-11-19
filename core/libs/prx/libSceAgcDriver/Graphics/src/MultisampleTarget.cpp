@@ -781,14 +781,19 @@ public:
         return {shared_from_this(), texture.get()};
     }
 
-    std::shared_ptr<Texture> FirstSample(VkComponentMapping components) {
-        const auto source = Sampled({});
-        if (firstSampleCopy == nullptr) firstSampleCopy = std::make_unique<FirstSampleCopy>(context, target.format, target.extent);
-        firstSampleCopy->Record(*Recorder::Active(), source->View(), source->Layout());
+    std::shared_ptr<Texture> FirstSample(VkComponentMapping components, VkExtent2D extent, VkFormat format) {
+        const auto source = format == target.format ? Sampled({}) : SampledAs(format, {}, VK_IMAGE_VIEW_TYPE_2D);
+        auto& first = firstSamples[format];
+        if (first.copy == nullptr) {
+            first.copy = std::make_unique<FirstSampleCopy>(context, format, extent);
+            first.extent = extent;
+        }
+        Require(first.extent.width == extent.width && first.extent.height == extent.height, "reading sample 0 of a multisampled color target through views of different extents is not implemented");
+        first.copy->Record(*Recorder::Active(), source->View(), source->Layout());
         const std::array<std::uint32_t, 4> key{static_cast<std::uint32_t>(components.r), static_cast<std::uint32_t>(components.g), static_cast<std::uint32_t>(components.b), static_cast<std::uint32_t>(components.a)};
-        auto& texture = firstSampleTextures[key];
+        auto& texture = first.textures[key];
         if (texture == nullptr) {
-            texture = std::make_shared<Texture>(context, firstSampleCopy->Image(), target.format, VK_IMAGE_ASPECT_COLOR_BIT, components);
+            texture = std::make_shared<Texture>(context, first.copy->Image(), format, VK_IMAGE_ASPECT_COLOR_BIT, components);
             texture->MarkRefreshedPerUse();
         }
         return {shared_from_this(), texture.get()};
@@ -947,8 +952,12 @@ private:
     std::map<std::array<std::uint32_t, 5>, std::unique_ptr<Texture>> fmaskTextures;
     std::map<std::array<std::uint32_t, 5>, std::shared_ptr<Texture>> textures;
     std::vector<std::shared_ptr<Texture>> retiredTextures;
-    std::unique_ptr<FirstSampleCopy> firstSampleCopy;
-    std::map<std::array<std::uint32_t, 4>, std::shared_ptr<Texture>> firstSampleTextures;
+    struct FirstSampleView {
+        std::unique_ptr<FirstSampleCopy> copy;
+        VkExtent2D extent{};
+        std::map<std::array<std::uint32_t, 4>, std::shared_ptr<Texture>> textures;
+    };
+    std::map<VkFormat, FirstSampleView> firstSamples;
     struct ReinterpretCopy {
         Allocation allocation;
         std::map<std::array<std::uint32_t, 5>, std::shared_ptr<Texture>> textures;
@@ -1049,8 +1058,9 @@ private:
     std::shared_ptr<Buffer> guestSampleUpload(const ColorTarget& use) {
         Require(use.cmaskAddress == 0 && use.dccAddress == 0, "uploading multisampled guest color under compression metadata is not implemented");
         Require(use.layers == 1u && use.arraySlice == 0u && use.arrayLastSlice == 0u && use.depth == 1u && use.depthSlice == 0u && use.mipCount == 1u && use.mip == 0u && !use.mipTail, "uploading multisampled guest color of arrays, volumes or mips is not implemented");
-        Require(use.tileMode == ColorTileMode::RenderTarget || use.tileMode == ColorTileMode::Z64KBX, "non-uniform multisampled guest color tiling is not implemented");
-        const MultisampleTextureLayout layout(use.tileMode == ColorTileMode::Z64KBX ? TextureTileMode::kZ64KBX : TextureTileMode::kR64KBX, use.elementBytes, use.samples, use.extent.width, use.extent.height, 1u, use.pipeBankXor);
+        const bool gcn = use.tileMode == ColorTileMode::GcnThin2D || use.tileMode == ColorTileMode::GcnDisplay2D;
+        Require(use.tileMode == ColorTileMode::RenderTarget || use.tileMode == ColorTileMode::Z64KBX || (gcn && storedFragments(use) == use.samples), "non-uniform multisampled guest color tiling is not implemented");
+        const auto layout = gcn ? MultisampleTextureLayout(GcnTiling(ColorTextureTileMode(use.tileMode), use.elementBytes, use.samples), use.elementBytes, use.samples, use.extent.width, use.extent.height, use.pipeBankXor) : MultisampleTextureLayout(use.tileMode == ColorTileMode::Z64KBX ? TextureTileMode::kZ64KBX : TextureTileMode::kR64KBX, use.elementBytes, use.samples, use.extent.width, use.extent.height, 1u, use.pipeBankXor);
         Require(layout.Bytes() == MultisampledColorBytes(use) && layout.Bytes() <= std::numeric_limits<std::size_t>::max(), "the multisampled guest color layout and footprint differ");
         Require(layout.LinearBytes() / use.elementBytes <= std::numeric_limits<std::uint32_t>::max(), "the multisampled guest color element count is unsupported");
         std::vector<std::byte> guest(static_cast<std::size_t>(layout.Bytes()));
@@ -1168,8 +1178,7 @@ private:
         fmaskTextures.clear();
         textures.clear();
         retiredTextures.clear();
-        firstSampleTextures.clear();
-        firstSampleCopy.reset();
+        firstSamples.clear();
         for (auto& [format, copy] : reinterpretCopies) {
             copy.textures.clear();
             destroy(copy.allocation);
@@ -1458,6 +1467,8 @@ MultisampleTarget& createFilled(const Context& context, const GuestTextureResour
         case TextureTileMode::kZ64KBX: use.tileMode = ColorTileMode::Z64KBX; break;
         case TextureTileMode::kD64KBX: use.tileMode = ColorTileMode::D64KBX; break;
         case TextureTileMode::kR64KBX: use.tileMode = ColorTileMode::RenderTarget; break;
+        case TextureTileMode::kGcnThin2D: use.tileMode = ColorTileMode::GcnThin2D; break;
+        case TextureTileMode::kGcnDisplay2D: use.tileMode = ColorTileMode::GcnDisplay2D; break;
         default: refuse("whose tile mode " + std::to_string(static_cast<int>(resource.tileMode)) + " has no modeled multisampled color footprint");
     }
     use.address = resource.baseAddress;
@@ -1468,6 +1479,11 @@ MultisampleTarget& createFilled(const Context& context, const GuestTextureResour
     use.elementBytes = BytesPerElement(resource.format);
     use.pipeBankXor = resource.pipeBankXor;
     use.samples = resource.samples;
+    if (ColorTileModeIsGcn(use.tileMode)) {
+        const auto tiling = GcnTiling(resource.tileMode, use.elementBytes);
+        use.extent = {resource.gcnPitch != 0u ? resource.gcnPitch : resource.width, (resource.height + tiling.blockHeight - 1u) / tiling.blockHeight * tiling.blockHeight};
+        use.surfaceExtent = use.extent;
+    }
     const auto bytes = MultisampledColorBytes(use);
     if (bytes == 0) refuse("whose " + std::to_string(use.elementBytes) + "-byte elements have no modeled multisampled color footprint");
     use.bytes = ColorTargetLayout(use.extent.width, use.extent.height, use.tileMode, use.elementBytes).Bytes();
@@ -1595,8 +1611,9 @@ bool MultisampledCmask::TakeClear() {
 }
 
 std::uint64_t MultisampledColorBytes(const ColorTarget& target) {
-    const auto blockLog2 = MultisampledBlockLog2(target.tileMode);
     const auto fragments = storedFragments(target);
+    if (ColorTileModeIsGcn(target.tileMode)) return static_cast<std::uint64_t>(ColorTargetLayout(target.extent.width, target.extent.height, target.tileMode, target.elementBytes, target.pipeBankXor).Bytes()) * fragments;
+    const auto blockLog2 = MultisampledBlockLog2(target.tileMode);
     if (blockLog2 == 0 || !std::has_single_bit(target.elementBytes) || !std::has_single_bit(fragments)) return 0;
     const auto fragmentsLog2 = static_cast<std::uint32_t>(std::countr_zero(fragments));
     const auto elementsLog2 = blockLog2 - static_cast<std::uint32_t>(std::countr_zero(target.elementBytes)) - fragmentsLog2;
@@ -1768,6 +1785,9 @@ void PrepareMultisampleTargetForDraw_nid_no_patch(const Context& context, const 
         TargetsLock lock;
         discardRetiredTargets();
         if (std::ranges::any_of(targets(), [&](const auto& candidate) { return candidate->context.device == context.device && candidate->Serves(target); })) return;
+        for (const auto& candidate : targets()) {
+            if (candidate->context.device == context.device && candidate->fromTexture && candidate->target.surfaceAddress == target.surfaceAddress && !candidate->use->hostOnly.load(std::memory_order_acquire)) RetireMultisampleColorTarget(candidate->active);
+        }
     }
     if (target.dccAddress != 0u || target.cmaskFastClear) return;
     Require(target.cmaskAddress == 0u, "initial multisample color contents with CMASK require a modeled metadata import");
@@ -1797,8 +1817,9 @@ void PrepareMultisampleTargetForDraw_nid_no_patch(const Context& context, const 
     }
     std::shared_ptr<Buffer> upload;
     if (!clear) {
-        Require(target.tileMode == ColorTileMode::RenderTarget, "nonuniform initial multisample color tiling is not implemented");
-        const MultisampleTextureLayout layout(TextureTileMode::kR64KBX, target.elementBytes, target.samples, target.extent.width, target.extent.height, 1u, target.pipeBankXor);
+        const bool gcn = target.tileMode == ColorTileMode::GcnThin2D || target.tileMode == ColorTileMode::GcnDisplay2D;
+        Require(target.tileMode == ColorTileMode::RenderTarget || (gcn && storedFragments(target) == target.samples), "nonuniform initial multisample color tiling is not implemented");
+        const auto layout = gcn ? MultisampleTextureLayout(GcnTiling(ColorTextureTileMode(target.tileMode), target.elementBytes, target.samples), target.elementBytes, target.samples, target.extent.width, target.extent.height, target.pipeBankXor) : MultisampleTextureLayout(TextureTileMode::kR64KBX, target.elementBytes, target.samples, target.extent.width, target.extent.height, 1u, target.pipeBankXor);
         Require(layout.Bytes() == bytes && layout.LinearBytes() / target.elementBytes <= std::numeric_limits<std::uint32_t>::max(), "initial multisample color layout and footprint differ");
         upload = stageGuestSamples(context, layout, snapshot);
     }
@@ -1881,7 +1902,8 @@ std::shared_ptr<Texture> MultisampleTargetTexture(const Context& context, const 
         if (target->context.device != context.device || target->target.surfaceAddress != resource.baseAddress) continue;
         const auto& rendered = target->target;
         if (rendered.eqaaFragments != 0) throw std::runtime_error(eqaaReadRefusal("sampling", rendered, resource));
-        const bool sameShape = rendered.extent.width == resource.width && rendered.extent.height == resource.height && rendered.samples == resource.samples && rendered.mip == 0;
+        const bool padded = ColorTileModeIsGcn(rendered.tileMode) && (resource.gcnPitch == 0u || resource.gcnPitch == rendered.extent.width) && resource.width <= rendered.extent.width && resource.height <= rendered.extent.height;
+        const bool sameShape = ((rendered.extent.width == resource.width && rendered.extent.height == resource.height) || padded) && rendered.samples == resource.samples && rendered.mip == 0;
         if (sameShape && rendered.format == format) return target->Sampled(components, viewType);
         if (sameShape && redBlueSwapped(rendered.format, format)) return target->Sampled(swapRedBlue(components), viewType);
         if (sameShape && rendered.elementBytes == BytesPerElement(resource.format) && target->Reinterpretable(format)) return target->SampledAs(format, components, viewType);
@@ -1905,14 +1927,16 @@ std::shared_ptr<Texture> MultisampleTargetFirstSample(const Context& context, co
         if (!target->active->load(std::memory_order_acquire)) continue;
         if (target->context.device != context.device || target->target.surfaceAddress != resource.baseAddress) continue;
         const auto& rendered = target->target;
-        const bool sameShape = rendered.extent.width == resource.width && rendered.extent.height == resource.height && rendered.samples == resource.samples && rendered.mip == 0;
-        if (sameShape && rendered.format == format) return target->FirstSample(components);
-        if (sameShape && redBlueSwapped(rendered.format, format)) return target->FirstSample(swapRedBlue(components));
+        const bool padded = ColorTileModeIsGcn(rendered.tileMode) && (resource.gcnPitch == 0u || resource.gcnPitch == rendered.extent.width) && resource.width <= rendered.extent.width && resource.height <= rendered.extent.height;
+        const bool sameShape = ((rendered.extent.width == resource.width && rendered.extent.height == resource.height) || padded) && rendered.samples == resource.samples && rendered.mip == 0;
+        if (sameShape && rendered.format == format) return target->FirstSample(components, {resource.width, resource.height}, format);
+        if (sameShape && redBlueSwapped(rendered.format, format)) return target->FirstSample(swapRedBlue(components), {resource.width, resource.height}, rendered.format);
+        if (sameShape && rendered.elementBytes == BytesPerElement(resource.format) && target->Reinterpretable(format)) return target->FirstSample(components, {resource.width, resource.height}, format);
         other = target.get();
     }
     if (other == nullptr) {
         Require(Recorder::Active() != nullptr, "a multisampled texture is only sampled by recorded draws and dispatches");
-        return createFilled(context, resource, format, "sampling", false).FirstSample(components);
+        return createFilled(context, resource, format, "sampling", false).FirstSample(components, {resource.width, resource.height}, format);
     }
     char text[320];
     std::snprintf(text, sizeof(text), "AGC graphics: reading sample 0 of multisampled color target 0x%llx (%ux%u, %u samples, vk format %d) as a %ux%u texture of %u samples and guest format %u (vk %d) is not implemented", static_cast<unsigned long long>(resource.baseAddress), other->target.extent.width, other->target.extent.height, other->target.samples, static_cast<int>(other->target.format), resource.width, resource.height, resource.samples, resource.format, static_cast<int>(format));

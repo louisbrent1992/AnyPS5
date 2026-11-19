@@ -99,7 +99,7 @@ struct GcnTileGeometry {
     std::uint32_t bankMask = 0;
     std::uint32_t bankShift = 0;
 };
-GcnTileGeometry GcnTiling(TextureTileMode tileMode, std::uint32_t bytesPerElement);
+GcnTileGeometry GcnTiling(TextureTileMode tileMode, std::uint32_t bytesPerElement, std::uint32_t fragments = 1u);
 inline std::uint32_t GcnLayerBankXor(const GcnTileGeometry& geometry, std::uint32_t layer) { return ((geometry.layerBankStep * layer) & geometry.bankMask) << geometry.bankShift; }
 inline TextureTileMode MipTileMode(TextureTileMode tileMode, const TileMipLayout& mip) { return mip.gcnMicroTiled ? (IsGcnThick(tileMode) ? TextureTileMode::kGcnThin1D : GcnMicroTileMode(tileMode)) : tileMode; }
 bool LevelsFitAllocation(const GuestTextureResource& surface, std::uint32_t levels);

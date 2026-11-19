@@ -1,5 +1,6 @@
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTextureLayout.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleSwizzleEquations.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include <algorithm>
 #include <bit>
@@ -76,10 +77,38 @@ MultisampleTextureLayout::MultisampleTextureLayout(TextureTileMode tileMode, std
     fragmentOffsets = axisOffsets(*equation, fragments, 48u);
 }
 
+MultisampleTextureLayout::MultisampleTextureLayout(const GcnTileGeometry& geometry, std::uint32_t elementBytes, std::uint32_t fragments, std::uint32_t width, std::uint32_t height, std::uint32_t pipeBankXor) : elementBytes(elementBytes), fragments(fragments), width(width), height(height), layers(1u), pipeBankXor(pipeBankXor) {
+    Require(width != 0 && height != 0 && width <= 16384u && height <= 16384u, "invalid multisampled surface extent or layer count");
+    Require(std::has_single_bit(elementBytes) && elementBytes <= 16u, "unsupported multisampled surface element size");
+    Require(fragments == 2u || fragments == 4u || fragments == 8u, "unsupported multisampled surface fragment count");
+    Require((pipeBankXor & ~(geometry.bankMask << geometry.bankShift)) == 0, "a PS4 multisampled bank XOR applies only to the bank bits");
+    MultisampleSwizzleEquation equation{};
+    for (std::uint32_t bit = 0; bit < 16u; ++bit) {
+        const std::uint64_t mask = geometry.equation[bit];
+        equation.bits[bit] = (mask & 0xfffu) | (((mask >> 12u) & 0xfffu) << 16u) | ((mask >> 24u) << 48u);
+    }
+    blockWidth = geometry.blockWidth;
+    blockHeight = geometry.blockHeight;
+    blockBytes = geometry.blockBytes;
+    pitch = (width + blockWidth - 1u) / blockWidth * blockWidth;
+    paddedHeight = (height + blockHeight - 1u) / blockHeight * blockHeight;
+    const auto splitBytes = static_cast<std::uint64_t>(pitch / blockWidth) * (paddedHeight / blockHeight) * blockBytes;
+    sliceBytes = splitBytes * geometry.splitSlices;
+    xOffsets = axisOffsets(equation, width, 0u);
+    yOffsets = axisOffsets(equation, height, 16u);
+    layerOffsets = {0u};
+    fragmentOffsets = axisOffsets(equation, fragments, 48u);
+    for (std::uint32_t fragment = 0; fragment < fragments; ++fragment) {
+        std::uint64_t split = 0;
+        for (std::uint32_t bit = 0; bit < geometry.splitMasks.size(); ++bit) split |= static_cast<std::uint64_t>(std::popcount((fragment << 24u) & geometry.splitMasks[bit]) & 1) << bit;
+        fragmentSlices.push_back(split * splitBytes);
+    }
+}
+
 std::uint64_t MultisampleTextureLayout::offset(std::uint32_t x, std::uint32_t y, std::uint32_t layer, std::uint32_t fragment) const {
     const auto block = static_cast<std::uint64_t>(y / blockHeight) * (pitch / blockWidth) + x / blockWidth;
     const auto withinBlock = xOffsets[x] ^ yOffsets[y] ^ layerOffsets[layer] ^ fragmentOffsets[fragment] ^ pipeBankXor;
-    return static_cast<std::uint64_t>(layer) * sliceBytes + block * Alignment + withinBlock;
+    return static_cast<std::uint64_t>(layer) * sliceBytes + (fragmentSlices.empty() ? 0u : fragmentSlices[fragment]) + block * blockBytes + withinBlock;
 }
 
 std::uint64_t MultisampleTextureLayout::Offset(std::uint32_t x, std::uint32_t y, std::uint32_t layer, std::uint32_t fragment) const {
@@ -119,6 +148,7 @@ void MultisampleTextureLayout::Tile(std::span<const std::byte> source, std::span
 }
 
 void MultisampleTextureLayout::TileHoisted(std::span<const std::byte> source, std::span<std::byte> destination) const {
+    Require(fragmentSlices.empty(), "hoisted multisampled tiling is not implemented for PS4 layouts");
     const auto sourceBytes = LinearBytes();
     const auto destinationBytes = Bytes();
     Require(source.size() >= sourceBytes && destination.size() >= destinationBytes, "multisampled surface transfer buffer is too small");

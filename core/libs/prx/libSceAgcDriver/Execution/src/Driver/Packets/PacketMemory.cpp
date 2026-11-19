@@ -334,7 +334,7 @@ void Driver::dumpSampleCounters(std::uint64_t address) {
         samples = recorder->SamplesTotal();
     }
     constexpr std::uint64_t ready = 1ull << 63u;
-    for (std::uint64_t db = 0; db < Pm4::SampleDumpBlocks; ++db) {
+    for (std::uint64_t db = 0; db < Pm4::SampleDumpBlockCount(); ++db) {
         const std::uint64_t value = ready | (db == 0 ? samples : 0u);
         GuestMemory::Write(address + db * Pm4::SampleDumpStride, std::as_bytes(std::span(&value, 1)).first(Pm4::SampleDumpBlockBytes), 8);
     }
@@ -344,7 +344,7 @@ bool Driver::enqueueSampleDumpPacket(std::span<const std::uint32_t> packet, std:
     static const bool ordered = std::getenv("APS5_PIPELINE_DRAIN_SAMPLE_DUMPS") == nullptr;
     if (!ordered || opcode != 0x46 || queue != 0 || packet.size() < 4 || !Pm4::SampleDump(packet) || !DrawPipeline::Active() || !deferredLabels().labels.empty()) return false;
     const auto address = Pm4::SampleDumpAddress(packet);
-    if (address == 0 || !GuestMemory::Accessible(reinterpret_cast<const void*>(address), Pm4::SampleDumpBytes, true)) return false;
+    if (address == 0 || !GuestMemory::Accessible(reinterpret_cast<const void*>(address), Pm4::SampleDumpSpan(), true)) return false;
     DrawPipeline::Queue0().Enqueue(DrawPipeline::CommitKind::SampleDump, [this, queue, address] {
         GuestMemory::SetCurrentPacket(0x46, queue);
         bool wrote = false;
@@ -358,7 +358,7 @@ bool Driver::enqueueSampleDumpPacket(std::span<const std::uint32_t> packet, std:
             }
         }
         if (!wrote) dumpSampleCounters(address);
-    }, {{address, address + Pm4::SampleDumpBytes}});
+    }, {{address, address + Pm4::SampleDumpSpan()}});
     ++sampleDumpsQueued;
     Graphics::Recorder::CountRecordedWork();
     return true;

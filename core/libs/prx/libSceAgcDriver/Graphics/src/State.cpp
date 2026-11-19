@@ -74,6 +74,14 @@ Registers::const_iterator find(const Registers& registers, std::uint32_t offset,
     return registers.find(offset);
 }
 
+bool primitiveResetEnabled(const Registers& userConfig, const Registers& cx) {
+    if (!ShaderRecompiler::GcnGuestShaders()) return read(userConfig, 0x24b, RegisterBank::UserConfig) != 0;
+    const auto context = find(cx, 0x2a5);
+    if (context != cx.end() && (context->second & 1u) != 0u) return true;
+    const auto user = find(userConfig, 0x24b, RegisterBank::UserConfig);
+    return user != userConfig.end() && user->second != 0u;
+}
+
 float readFloat(const Registers& registers, std::uint32_t offset) {
     const auto value = std::bit_cast<float>(read(registers, offset));
     if (!std::isfinite(value)) Require(false, "non-finite register at DWORD " + std::to_string(offset));
@@ -489,7 +497,10 @@ DepthTarget decodeDepthPlane(const Registers& cx) {
     depth.lastSlice = (view >> 13u) & 0x7ffu;
     depth.address = zFormat != 0 ? base(0x012, 0x01a) : 0;
     depth.stencilAddress = stencil ? base(0x013, 0x01b) : 0;
-    if (depth.samples != 1u) {
+    if (gcn) {
+        depth.gcnDepthTileIndex = (read(cx, 0x010) >> 20u) & 7u;
+        depth.gcnStencilTileIndex = (stencilInfo >> 20u) & 7u;
+    } else if (depth.samples != 1u) {
         depth.pipeBankXor = static_cast<std::uint32_t>(depth.address & 65535u);
         depth.address &= ~std::uint64_t{65535u};
         depth.stencilAddress &= ~std::uint64_t{65535u};
@@ -1053,7 +1064,8 @@ DecodedColorFormat DecodeColorFormatRaw(std::uint32_t format, std::uint32_t numb
     };
     const bool alternate = swap == 1;
     const auto single = [&](VkFormat vkFormat, std::uint32_t bytes) { return DecodedColorFormat{vkFormat, bytes, static_cast<std::uint8_t>((0xe4u & ~3u) | swap)}; };
-    if (swap > 1 && format != 1 && format != 2 && format != 4 && format != 7 && format != 10 && format != 12 && format != 16 && format != 19) return fail();
+    if (swap > 1 && format != 1 && format != 2 && format != 3 && format != 4 && format != 5 && format != 7 && format != 10 && format != 12 && format != 16 && format != 19) return fail();
+    const auto pair = static_cast<std::uint8_t>(swap == 1 ? 0xecu : swap == 2 ? 0xe1u : swap == 3 ? 0xe3u : 0xe4u);
     switch (format) {
         case 1:
             if (number == unorm) return single(VK_FORMAT_R8_UNORM, 1);
@@ -1068,8 +1080,7 @@ DecodedColorFormat DecodeColorFormatRaw(std::uint32_t format, std::uint32_t numb
             if (number == uint) return single(VK_FORMAT_R16_UINT, 2);
             return fail();
         case 3: {
-            if (swap > 1) return fail();
-            const auto mapping = static_cast<std::uint8_t>(alternate ? 0xecu : 0xe4u);
+            const auto mapping = pair;
             if (number == unorm) return {VK_FORMAT_R8G8_UNORM, 2, mapping};
             if (number == snorm) return {VK_FORMAT_R8G8_SNORM, 2, mapping};
             if (number == uint) return {VK_FORMAT_R8G8_UINT, 2, mapping};
@@ -1081,8 +1092,7 @@ DecodedColorFormat DecodeColorFormatRaw(std::uint32_t format, std::uint32_t numb
             if (number == sint) return single(VK_FORMAT_R32_SINT, 4);
             return fail();
         case 5: {
-            if (swap > 1) return fail();
-            const auto mapping = static_cast<std::uint8_t>(alternate ? 0xecu : 0xe4u);
+            const auto mapping = pair;
             if (number == floating) return {VK_FORMAT_R16G16_SFLOAT, 4, mapping};
             if (number == unorm) return {VK_FORMAT_R16G16_UNORM, 4, mapping};
             if (number == snorm) return {VK_FORMAT_R16G16_SNORM, 4, mapping};
@@ -1711,7 +1721,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
         default: throw std::runtime_error("AGC graphics: unsupported primitive type " + std::to_string(primitive));
     }
     APS5_LOG_OUT_DEBUG("Topology=%u", static_cast<unsigned>(result.topology));
-    result.primitiveRestart = read(queue.userConfig, 0x24b, RegisterBank::UserConfig) != 0 && !result.rectList && !result.quadList && result.topology != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+    result.primitiveRestart = primitiveResetEnabled(queue.userConfig, cx) && !result.rectList && !result.quadList && result.topology != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     zero(cx, 0x207, ~(LayerExports | ClipCullExports | ((result.vertexPoints || (result.stages.mesh.has_value() && result.stages.mesh->outputPrimitiveSize == 1u)) ? 1u << 16u : inactiveVertexPointSize(queue))), "layer, viewport or auxiliary vertex exports");
     Require(std::popcount(read(cx, 0x207) & 0xffffu) <= 8, "more than eight clip and cull distances are unsupported");
     result.paClVsOutCntl = read(cx, 0x207);
@@ -2871,7 +2881,7 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
     const auto require = [&](bool condition, const char* reason) {
         return condition ? std::string() : "AGC graphics: " + std::string(reason);
     };
-    if (indexed && value(queue.userConfig, 0x24b, word) && word != 0) {
+    if (indexed && (ShaderRecompiler::GcnGuestShaders() ? primitiveResetEnabled(queue.userConfig, cx) : value(queue.userConfig, 0x24b, word) && word != 0)) {
         std::uint32_t primitive = 0;
         std::uint32_t resetIndex = 0;
         if (value(queue.userConfig, 0x242, primitive) && (primitive & 0x3fu) != 1 && (primitive & 0x3fu) != 2 && (primitive & 0x3fu) != 3 && (primitive & 0x3fu) != 4 && (primitive & 0x3fu) != 5 && (primitive & 0x3fu) != 6 && (primitive & 0x3fu) != 21) return "AGC graphics: primitive restart is only supported for point, line and triangle topologies";

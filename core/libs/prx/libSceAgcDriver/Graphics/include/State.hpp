@@ -135,6 +135,8 @@ struct DepthTarget {
     std::uint32_t htileVrsEncoding = 0;
     bool htileDepthOnly = false;
     bool gcn = false;
+    std::uint32_t gcnDepthTileIndex = 0;
+    std::uint32_t gcnStencilTileIndex = 0;
     bool depthPartiallyResident = false;
     bool stencilPartiallyResident = false;
 
@@ -145,7 +147,7 @@ struct DepthTarget {
             htileAddress == other.htileAddress && htileStencil == other.htileStencil && samples == other.samples && depthSwizzle == other.depthSwizzle &&
             pipeBankXor == other.pipeBankXor && firstSlice == other.firstSlice && lastSlice == other.lastSlice && iterate256 == other.iterate256 &&
             htilePipeAligned == other.htilePipeAligned && htileVrsEncoding == other.htileVrsEncoding && htileDepthOnly == other.htileDepthOnly &&
-            gcn == other.gcn && depthPartiallyResident == other.depthPartiallyResident && stencilPartiallyResident == other.stencilPartiallyResident;
+            gcn == other.gcn && gcnDepthTileIndex == other.gcnDepthTileIndex && gcnStencilTileIndex == other.gcnStencilTileIndex && depthPartiallyResident == other.depthPartiallyResident && stencilPartiallyResident == other.stencilPartiallyResident;
     }
 };
 

@@ -3212,7 +3212,7 @@ bool VulkanDevice::DumpSamplesOnGpu(std::uint64_t address) {
     if (syncDumps) return false;
     if (!state->recorder) return false;
     auto& recorder = *state->recorder;
-    constexpr std::size_t bytes = Pm4::SampleDumpBytes;
+    const std::size_t bytes = Pm4::SampleDumpSpan();
     if (OpportunisticReap()) recorder.Reap();
     if (state->CopiedWriterOverlaps(address, bytes) || (Graphics::Recorder::PendingCompletionLabels() != 0 && recorder.CompletionLabelIn(address, bytes))) return false;
     const auto context = graphicsContext();
