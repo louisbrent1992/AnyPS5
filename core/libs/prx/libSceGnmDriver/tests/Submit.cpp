@@ -95,6 +95,26 @@ private:
     std::uint8_t* block = nullptr;
 };
 
+void TestIndirectBuffers() {
+    GuestBlock block;
+    auto* words = reinterpret_cast<std::uint32_t*>(&block.Data());
+    std::uint32_t* called = words + 1024;
+    std::uint32_t* chained = words + 2048;
+    called[0] = Type3(OpNop, 1);
+    called[1] = 0xaau;
+    chained[0] = Type3(OpNop, 1);
+    chained[1] = 0xbbu;
+    const auto indirect = [](const std::uint32_t* target, std::uint32_t control) {
+        const auto address = reinterpret_cast<std::uintptr_t>(target);
+        return std::vector<std::uint32_t>{Type3(0x3f, 3), static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32u), control};
+    };
+    std::vector<std::uint32_t> draw{Type3(OpNop, 1), 0x11u};
+    for (const auto& packet : {indirect(called, 2), indirect(chained, (1u << 20u) | 2u)}) draw.insert(draw.end(), packet.begin(), packet.end());
+    draw.insert(draw.end(), {Type3(OpNop, 1), 0xccu});
+    const std::vector<std::uint32_t> expected{Type3(OpNop, 1), 0x11u, Type3(OpNop, 1), 0xaau, Type3(OpNop, 1), 0xbbu};
+    Require(GnmDriver::MergeEngines(draw, {}) == expected, "a called buffer did not return or a chained buffer did not replace the rest of the draw command buffer");
+}
+
 std::uint32_t Low(const volatile void* pointer) {
     return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(pointer));
 }
@@ -152,6 +172,7 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string(argv[1]) == "--packets") {
             TestPackets();
+            TestIndirectBuffers();
             std::puts("GnmDriver packet tests passed");
             return 0;
         }

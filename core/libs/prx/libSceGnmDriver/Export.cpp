@@ -1,6 +1,8 @@
 #include "prx/libSceGnmDriver/include/Api.hpp"
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <thread>
 #include <atomic>
 #include <bit>
 #include <cerrno>
@@ -326,22 +328,50 @@ std::vector<std::uint32_t> MergeEngines(std::span<const std::uint32_t> dcb, std:
             }
         }
     };
-    for (std::size_t draw = 0; draw < dcb.size();) {
-        const auto packet = PacketAt(dcb, draw, "draw command buffer");
-        draw += packet.size();
-        if (IsFiller(packet[0])) continue;
-        switch (Opcode(packet[0])) {
-            case OpWaitOnCeCounter:
-                runConstant(true);
-                if (g_constantCounter <= g_drawCounter) throw std::runtime_error("GnmDriver: the draw engine waits on a constant engine counter that is never incremented");
-                break;
-            case OpIncrementDeCounter:
-                ++g_drawCounter;
-                break;
-            default:
-                Lower(out, packet);
+    // A title may still be writing a buffer's last packets on another thread while it submits: the
+    // console's GPU reads them later. A header that is not a PM4 packet yet is read again for a while.
+    // ponytail: a 50 ms poll per such header; parse on a GPU-side thread if titles need longer.
+    const auto settledPacketAt = [](std::span<const std::uint32_t> words, std::size_t at) {
+        for (int tries = 0;; ++tries) {
+            try {
+                return PacketAt(words, at, "draw command buffer");
+            } catch (const std::runtime_error&) {
+                if (tries == 500) throw;
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            }
         }
-    }
+    };
+    const auto runDraw = [&](auto& self, std::span<const std::uint32_t> words, std::uint32_t level) -> void {
+        for (std::size_t draw = 0; draw < words.size();) {
+            const auto packet = settledPacketAt(words, draw);
+            draw += packet.size();
+            if (IsFiller(packet[0])) continue;
+            switch (Opcode(packet[0])) {
+                case OpWaitOnCeCounter:
+                    runConstant(true);
+                    if (g_constantCounter <= g_drawCounter) throw std::runtime_error("GnmDriver: the draw engine waits on a constant engine counter that is never incremented");
+                    break;
+                case OpIncrementDeCounter:
+                    ++g_drawCounter;
+                    break;
+                case OpIndirectBuffer: {
+                    // INDIRECT_BUFFER calls a buffer and returns, or with CHAIN continues there instead.
+                    if (packet.size() != 4 || (packet[0] & 1u) != 0) NotImplemented_nid_no_patch("a predicated or malformed INDIRECT_BUFFER in a draw command buffer");
+                    const bool chain = (packet[3] & IndirectBufferChain) != 0;
+                    if (!chain && level == CalledBufferLevels) NotImplemented_nid_no_patch("a draw command buffer called more than two levels deep");
+                    const std::size_t count = packet[3] & IndirectBufferWords;
+                    const auto* target = reinterpret_cast<const std::uint32_t*>(static_cast<std::uintptr_t>(packet[1] & ~3u) | (static_cast<std::uintptr_t>(packet[2] & 0xffffu) << 32));
+                    AgcDriverCheckGuestMemory_nid_postfix(target, count * sizeof(std::uint32_t), alignof(std::uint32_t));
+                    self(self, {target, count}, chain ? level : level + 1);
+                    if (chain) return;
+                    break;
+                }
+                default:
+                    Lower(out, packet);
+            }
+        }
+    };
+    runDraw(runDraw, dcb, 0);
     runConstant(false);
     return out;
 }

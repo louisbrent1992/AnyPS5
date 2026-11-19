@@ -3,6 +3,7 @@
 ## add Functional
 
 - [Context registers through SET_CONFIG_REG on a PS4](../../../core/libs/prx/libSceAgcDriver/Execution/src/Pm4.cpp) (libSceAgcDriver, PS4) - with GCN guest shaders, a SET_CONFIG_REG whose offset is 0x8000-0x83ff writes context registers 0-0x3ff. The config bank starts at 0x2000, so Red Dead Redemption 2's offset 0x8102 is VGT_INDX_OFFSET (0xa102). Other config offsets are still refused. Not measured on a console.
+- [1_5_5_5 targets with the alternate component order](../../../core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp) (libSceAgcDriver) - COLOR_1_5_5_5 UNORM with COMP_SWAP ALT renders through A1R5G5B5 without exchanging X and Z, the layout of B5G5R5A1 in Mesa's `si_translate_colorswap`. Not measured on a console.
 - [GCN vertex instance step rates](../../../core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawCapture.cpp) (libSceAgcDriver, PS4) - a legacy GCN vertex program's v1 and v2 hold the instance index divided by VGT_INSTANCE_STEP_RATE_0 and _1 (context 0x2a8 and 0x2a9) when SPI_SHADER_PGM_RSRC1_VS.VGPR_COMP_CNT requests them. The rates are part of the shader cache key. A rate of 0, the CLEAR_STATE value, divides by 1, and the console result for it is not known. The rates are not in serialized recompile requests, so a replayed request uses 1.
 
 # libSceGnmDriver
@@ -17,3 +18,4 @@
 ## add Functional
 
 - [PS4 recording imports](../../../core/libs/prx/libSceVideoRecording/CMakeLists.txt) (libSceVideoRecording, PS4) - libSceVideoRecording is built from the libSceVideoRecordingP sources, because PS4 titles import the same API under that library name.
+- [PS4 draw command buffer chains](../../../core/libs/prx/libSceGnmDriver/Export.cpp) (libSceGnmDriver, PS4) - an INDIRECT_BUFFER in a draw command buffer is followed at submission. A call runs its buffer and returns, at most two levels deep. A chain continues in its buffer and skips the rest of the current one. Red Dead Redemption 2 writes the chain at the end of a buffer on another thread while it submits that buffer. A header that is not a PM4 packet yet is therefore read again every 0.1 ms, for up to about 50 ms, before the submission fails. Predicated INDIRECT_BUFFER packets are not implemented.
