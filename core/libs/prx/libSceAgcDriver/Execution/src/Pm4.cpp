@@ -147,6 +147,14 @@ bool drawLocation(std::uint32_t value) {
     return value == 0 || value == 0x280u || value - 0x8cu < 32u || value - 0x10cu < 32u;
 }
 
+// PS4 Gnm writes some context registers (VGT_INDX_OFFSET, 0xa102) with SET_CONFIG_REG: the config
+// bank starts at 0x2000, so a config offset of 0x8000.. reaches the context bank at 0xa000.
+constexpr std::uint32_t GcnConfigToContext = 0x8000;
+
+bool gcnContextConfigWrite(std::span<const std::uint32_t> packet) {
+    return ShaderRecompiler::GcnGuestShaders() && packet.size() >= 3 && packet[1] - GcnConfigToContext < 0x400u && packet.size() - 2 <= 0x400u - (packet[1] - GcnConfigToContext);
+}
+
 Registers& registersFor(QueueState& queue, std::uint32_t opcode) {
     if (opcode == 0x69 || opcode == 0x9f) return queue.context;
     if (opcode == 0x76 || opcode == 0x63) return queue.shader;
@@ -335,6 +343,11 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
     const auto opcode = (header >> 8u) & 0xffu;
     const auto size = [&](std::size_t count) { require(packet.size() == count, "invalid packet size"); };
     const auto graphics = [&] { require(queue == 0, "graphics packet in compute queue"); };
+    if (opcode == 0x68 && gcnContextConfigWrite(packet)) {
+        graphics();
+        require((header & 0xffu) == 0, "SET_CONFIG_REG header flags are not implemented");
+        return;
+    }
     const auto reason = UnsupportedReason(header);
     if (!reason.empty() && !(opcode == 0x3f && Predicated(header))) throw std::runtime_error(std::string(reason));
     if (opcode == 0x10) {
@@ -1178,6 +1191,10 @@ void executeIndexAttributes(const IndexAttributes& attributes, QueueState& queue
 
 void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
     const auto opcode = (packet[0] >> 8u) & 0xffu;
+    if (opcode == 0x68 && gcnContextConfigWrite(packet)) {
+        for (std::size_t i = 2; i < packet.size(); ++i) writeRegister(queue, 0x69, packet[1] - GcnConfigToContext + static_cast<std::uint32_t>(i - 2), packet[i]);
+        return;
+    }
     switch (opcode) {
         case 0x10:
             switch ((packet[0] >> 2u) & 0x3fu) {
