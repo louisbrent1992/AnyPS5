@@ -288,6 +288,12 @@ bool ditheredAlphaSamplesSupported(const Registers& cx) {
     return config != cx.end() && (config->second & 0x700007u) == 0x300003u && eqaa != cx.end() && (eqaa->second & 0x207777u) == 0x3303u;
 }
 
+bool singleSampleDitheredAlphaSamplesSupported(const Registers& cx) {
+    const auto config = find(cx, 0x2f8);
+    const auto eqaa = find(cx, 0x201);
+    return (config == cx.end() || (config->second & 0x700007u) == 0u) && (eqaa == cx.end() || (eqaa->second & 0x207777u) == 0u);
+}
+
 bool twoSampleDitheredAlphaSamplesSupported(const Registers& cx) {
     const auto config = find(cx, 0x2f8);
     const auto eqaa = find(cx, 0x201);
@@ -1757,8 +1763,12 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     result.ditheredAlphaToCoverage = result.alphaToCoverage && ditheredAlphaToCoverageWord(alpha);
     if (!result.alphaToCoverage) zero(cx, 0x2dc, alphaDisabled ? AlphaToCoverageMask & ~1u : AlphaToCoverageMask, "dithered or rounded alpha-to-coverage");
     if (result.ditheredAlphaToCoverage && alpha == AlphaToCoverageDithered) {
-        Require(ditheredAlphaSamplesSupported(cx), "dithered alpha-to-coverage requires eight matched raster/DB_EQAA samples and one pixel iteration");
-        Require(!result.customSampleLocations, "dithered alpha-to-coverage with custom sample locations is unsupported");
+        if (singleSampleDitheredAlphaSamplesSupported(cx)) {
+            result.ditheredAlphaSamples = 1;
+        } else {
+            Require(ditheredAlphaSamplesSupported(cx), "dithered alpha-to-coverage requires one or eight matched raster/DB_EQAA samples and one pixel iteration");
+            Require(!result.customSampleLocations, "dithered alpha-to-coverage with custom sample locations is unsupported");
+        }
     }
     if (result.ditheredAlphaToCoverage && alpha == AlphaToCoverageTwoSampleDithered) {
         Require(twoSampleDitheredAlphaSamplesSupported(cx), "DB_ALPHA_TO_MASK 0xe701 requires two matched raster/DB_EQAA samples and one pixel iteration");
@@ -2912,10 +2922,10 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
         if ((word != AlphaToCoverageUndithered && !ditheredAlphaToCoverageWord(word)) || alphaDisabled) {
             if (auto reason = nonzero(cx, 0x2dc, alphaDisabled ? AlphaToCoverageMask & ~1u : AlphaToCoverageMask, "dithered or rounded alpha-to-coverage"); !reason.empty()) return reason;
         }
-        if (!alphaDisabled && word == AlphaToCoverageDithered && !ditheredAlphaSamplesSupported(cx)) return "AGC graphics: dithered alpha-to-coverage requires eight matched raster/DB_EQAA samples and one pixel iteration";
+        if (!alphaDisabled && word == AlphaToCoverageDithered && !ditheredAlphaSamplesSupported(cx) && !singleSampleDitheredAlphaSamplesSupported(cx)) return "AGC graphics: dithered alpha-to-coverage requires one or eight matched raster/DB_EQAA samples and one pixel iteration";
         if (!alphaDisabled && word == AlphaToCoverageTwoSampleDithered && !twoSampleDitheredAlphaSamplesSupported(cx)) return "AGC graphics: DB_ALPHA_TO_MASK 0xe701 requires two matched raster/DB_EQAA samples and one pixel iteration";
         if (!alphaDisabled && ditheredAlphaToCoverageWord(word)) {
-            if (word == AlphaToCoverageDithered && !ditheredAlphaLocationsSupported(cx)) return "AGC graphics: dithered alpha-to-coverage with custom sample locations is unsupported";
+            if (word == AlphaToCoverageDithered && !singleSampleDitheredAlphaSamplesSupported(cx) && !ditheredAlphaLocationsSupported(cx)) return "AGC graphics: dithered alpha-to-coverage with custom sample locations is unsupported";
             if (word == AlphaToCoverageTwoSampleDithered && !twoSampleDitheredAlphaLocationsSupported(cx)) return "AGC graphics: DB_ALPHA_TO_MASK 0xe701 is supported only with the two-sample locations (4,4),(-4,-4) or (-4,4),(4,-4) in every pixel";
             std::uint32_t format = 0;
             if (value(cx, 0x1c5, format)) {

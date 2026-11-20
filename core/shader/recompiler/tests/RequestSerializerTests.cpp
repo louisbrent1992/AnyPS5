@@ -202,7 +202,7 @@ void VerifyTessellationInstancePatches() {
 
 std::string SerializeVersion56(const ShaderRecompiler::RecompileRequest& request) {
     auto bytes = DecodeBase64(ShaderRecompiler::RequestSerializer{}.Serialize(request));
-    Require(bytes.size() > 14u && bytes[4] == 62u);
+    Require(bytes.size() > 14u && bytes[4] == 63u);
     bytes.resize(bytes.size() - 6u);
     bytes[4] = 56u;
     return EncodeBase64(bytes);
@@ -226,7 +226,7 @@ void VerifyTargetOptions() {
                     Require(replay.request.target.float16WidenNans == widen && replay.request.target.float16NarrowNans == narrow);
                     Require(serializer.Serialize(replay.request) == encoded);
                     auto bytes = DecodeBase64(encoded);
-                    Require(bytes[4] == 62u && bytes.back() == 0u);
+                    Require(bytes[4] == 63u && bytes.back() == 0u);
                     for (std::size_t missing = 1u; missing <= 6u; ++missing) {
                         auto truncated = bytes;
                         truncated.resize(truncated.size() - missing);
@@ -776,7 +776,7 @@ int VerifyVersion56Compatibility() {
         version40[4] = 40u;
         const auto replay40 = serializer.Deserialize(EncodeBase64(version40));
         Require(!replay40.request.target.float32DenormPreserve && replay40.request.target.float32FlushToZero == !preserve);
-        for (const std::uint8_t unwritten : {58u, 59u, 60u, 61u, 63u}) {
+        for (const std::uint8_t unwritten : {58u, 59u, 60u, 61u, 64u}) {
             auto future = bytes;
             future[4] = unwritten;
             bool futureRejected = false;
@@ -892,7 +892,7 @@ int VerifyVersion56Compatibility() {
         Require(replay35.request.target.spannedWaves == spanned && !replay35.request.target.float32FlushToZero);
         request.target.spannedAnySubgroup = spanned;
         const auto version62 = DecodeBase64(serializer.Serialize(request));
-        Require(version62[4] == 62u && version62.back() == (spanned ? 1u : 0u));
+        Require(version62[4] == 63u && version62.back() == (spanned ? 1u : 0u));
         Require(serializer.Deserialize(EncodeBase64(version62)).request.target.spannedAnySubgroup == spanned);
         auto version57 = version62;
         version57[4] = 57u;
@@ -1059,6 +1059,15 @@ int VerifyVersion56Compatibility() {
     auto unknownDither = twoSample;
     unknownDither[ditherByte] = 3u;
     Require(rejectsDither(unknownDither));
+    request.context.pixel->ditheredAlphaSamples = 1u;
+    auto oneSample = DecodeBase64(serializer.Serialize(request));
+    const auto oneReplay = serializer.Deserialize(EncodeBase64(oneSample));
+    Require(oneReplay.request.context.pixel->ditheredAlphaToCoverage && oneReplay.request.context.pixel->ditheredAlphaSamples == 1u);
+    Require(serializer.Serialize(oneReplay.request) == EncodeBase64(oneSample));
+    Require(oneSample[ditherByte] == 3u);
+    oneSample[ditherByte] = 4u;
+    Require(rejectsDither(oneSample));
+    request.context.pixel->ditheredAlphaSamples = 8u;
 
     ShaderRecompiler::RecompileRequest domain{};
     domain.shader.stage = ShaderRecompiler::ShaderStage::TessellationEvaluation;

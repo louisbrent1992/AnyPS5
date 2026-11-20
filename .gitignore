@@ -101,6 +101,7 @@ downloads/
 *.png
 
 *.json
+!patches/index.json
 !demo/web/i18n/*.json
 !/docs/run-report.schema.json
 !/docs/run-report-fixtures/*.json

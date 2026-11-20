@@ -1807,7 +1807,6 @@ StorageTexture::StorageTexture(const Context& context, TextureDetiler& detiler, 
                      descriptor.depthOrLastArray, descriptor.baseArray, static_cast<int>(descriptor.dimension), static_cast<int>(descriptor.tileMode), descriptor.format, static_cast<int>(vkFormat));
 #endif
         geometry = DescribeSurface(descriptor);
-        Require(!geometry.levelMajor, "a storage image of a PS4 layered surface with several mip levels (stored level by level) is not implemented");
         mips = geometry.mips;
         arrayLayers = geometry.layers;
         const auto elementBytes = BytesPerElement(descriptor.format);
@@ -1815,7 +1814,7 @@ StorageTexture::StorageTexture(const Context& context, TextureDetiler& detiler, 
         // Storage images in heaps the guest commits on demand only read and store committed pages.
         Require(!GuestMemory::CommittedRanges(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), true).empty(), "storage texture has no committed guest pages");
         // Write stamps are per 64 KiB block, so only 64 KiB-aligned layer slices can be told apart.
-        const bool layered = geometry.layers >= 2 && !geometry.thick && geometry.imageDepth == 1 && geometry.layers == geometry.imageLayers && geometry.layerBytes * geometry.layers == guestBytes && geometry.layerBytes % 65536 == 0 && descriptor.baseAddress % 65536 == 0;
+        const bool layered = geometry.layers >= 2 && !geometry.thick && !geometry.levelMajor && geometry.imageDepth == 1 && geometry.layers == geometry.imageLayers && geometry.layerBytes * geometry.layers == guestBytes && geometry.layerBytes % 65536 == 0 && descriptor.baseAddress % 65536 == 0;
         // Tile blocks divide the stamp blocks, so at an aligned base every unit is whole tile blocks
         // of its (layer, mip) slices (sliceWindows).
         blockUnits = StorageBlockUnits(descriptor, geometry);
@@ -2505,7 +2504,7 @@ bool StorageTexture::Refresh() {
 
 std::pair<std::uint32_t, std::uint32_t> StorageTexture::refreshUnits(std::uint32_t first, std::uint32_t count) const {
     const std::pair whole{std::uint32_t{0}, trackedLayers};
-    if (count == 0 || geometry.thick || geometry.imageLayers <= 1 || first >= geometry.imageLayers || count > geometry.imageLayers - first || geometry.layerBytes == 0 || trackedLayerBytes == 0 || descriptor.dccAddress != 0) return whole;
+    if (count == 0 || geometry.thick || geometry.levelMajor || geometry.imageLayers <= 1 || first >= geometry.imageLayers || count > geometry.imageLayers - first || geometry.layerBytes == 0 || trackedLayerBytes == 0 || descriptor.dccAddress != 0) return whole;
     const auto begin = geometry.GuestLayerOffset(first);
     const auto end = geometry.GuestLayerOffset(first + count - 1) + geometry.layerBytes;
     const auto firstLayer = static_cast<std::uint32_t>(begin / trackedLayerBytes);
@@ -3784,6 +3783,8 @@ std::vector<StorageTexture::SliceWindow> StorageTexture::sliceWindows(std::span<
                 const auto lastRow = static_cast<std::uint32_t>(lastBlock / mip.blocksPerRow);
                 const auto rowBegin = firstRow * block[2];
                 const auto rowEnd = std::min(mip.height, (lastRow + 1u) * block[2]);
+                if (rowBegin >= rowEnd) continue;
+                if (firstRow == lastRow && static_cast<std::uint32_t>(firstBlock - static_cast<std::uint64_t>(firstRow) * mip.blocksPerRow) * block[1] >= mip.width) continue;
                 window.tiledBegin = sliceBegin + low;
                 window.tiledEnd = sliceBegin + high;
                 window.linearBytes = static_cast<std::uint64_t>(rowEnd - rowBegin) * mip.pitchBytes;
@@ -4066,7 +4067,7 @@ std::uint64_t StorageTexture::uploadWindows(std::span<const ImportSegment> segme
     }
     if (allShadow && !read.empty() && (std::strcmp(uploadReason, "flushed") == 0 || std::strcmp(uploadReason, "store") == 0)) uploadReason = "shadow";
     auto windows = gather ? sliceWindows(runs) : sliceWindows(pieces);
-    Require(!windows.empty(), "storage image upload selects no unit");
+    if (windows.empty()) return 0;
     std::shared_ptr<DeviceBuffer> gatherBuffer;
     std::vector<std::pair<VkBuffer, std::vector<VkBufferCopy>>> gatherCopies;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> gatherReads;
@@ -4437,8 +4438,8 @@ std::uint64_t StorageTexture::writeBackWindows(std::span<const ImportSegment> se
                 } else {
                     const std::pair<std::uint64_t, std::uint64_t> run{part.begin, part.end};
                     const auto narrowed = sliceWindows(std::span(&run, 1));
-                    Require(narrowed.size() == 1, "a storage write-back slab piece is not one window");
-                    directPieces.push_back({partSlab(part), copy.dstOffset, narrowed.front().window, narrowed.front().window.linearBase - window.window.linearBase});
+                    Require(narrowed.size() <= 1, "a storage write-back slab piece is not one window");
+                    if (!narrowed.empty()) directPieces.push_back({partSlab(part), copy.dstOffset, narrowed.front().window, narrowed.front().window.linearBase - window.window.linearBase});
                 }
                 copy.size = 0;
             }
@@ -7259,7 +7260,7 @@ void StorageTexture::forgetBorrowed(std::uint32_t first, std::uint32_t count) {
 std::uint64_t StorageTexture::borrowUnits(StorageTexture& source, const std::vector<bool>& units) {
     const auto runs = unitRuns(units);
     const auto windows = sliceWindows(runs);
-    Require(!windows.empty(), "storage image borrows no unit");
+    if (windows.empty()) return 0;
     std::vector<VkImageCopy> regions;
     for (const auto& window : windows) {
         for (const auto& region : window.regions) regions.push_back({region.imageSubresource, region.imageOffset, region.imageSubresource, region.imageOffset, region.imageExtent});

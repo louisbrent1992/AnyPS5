@@ -1,4 +1,5 @@
 #include "prx/libkernel/include/Api.hpp"
+#include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libc/include/General.hpp"
@@ -718,7 +719,17 @@ std::size_t ConditionalWords(std::span<const std::uint32_t> packet) {
 }
 
 std::uint64_t SampleDumpBlockCount() {
-    return ShaderRecompiler::GcnGuestShaders() ? 8u : SampleDumpBlocks;
+    if (!ShaderRecompiler::GcnGuestShaders()) return SampleDumpBlocks;
+    static const bool neo = [] {
+        constexpr std::uint32_t ParamSfoAttributeSupportNeoMode = 0x00800000u;
+        std::uint32_t attribute = 0;
+        try {
+            return GetAppParamSfoAttribute_nid_no_patch(&attribute) && (attribute & ParamSfoAttributeSupportNeoMode) != 0;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }();
+    return neo ? 16u : 8u;
 }
 
 std::uint64_t SampleDumpSpan() {

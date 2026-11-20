@@ -124,6 +124,13 @@ IrValue* TranslationContext::getSamplerResource(const MemoryInfo& memory) {
     return &ir.Emit(IrOpcode::GetSamplerResource, IrOpcodeType(IrOpcode::GetSamplerResource), {&dword0.Value(), &dword1.Value(), &dword2.Value(), &dword3.Value()});
 }
 
+std::uint32_t ImageAddressVectorReads(const RdnaInstruction& inst, std::uint32_t baseReg) {
+    if (inst.imageAddressComponents == 0u) return 1u;
+    const std::uint32_t count = GetRdnaImageAddressDwordCount(inst.imageSampleFlags, inst.imageAddressComponents);
+    if (!GcnGuestShaders() || inst.imageNsaDwordCount != 0u) return count;
+    return std::min({count + 3u, 13u, 256u - baseReg});
+}
+
 IrValue* TranslationContext::makeImageAddress(const RdnaInstruction& inst, const RdnaOperand& base, std::uint32_t fragmentOffset) {
     std::array<IrValue*, 13> components{};
     IrValue& zero = ir.Constant(0u);
@@ -134,9 +141,7 @@ IrValue* TranslationContext::makeImageAddress(const RdnaInstruction& inst, const
     }
     const std::uint32_t nsaComponents = std::min(inst.imageNsaDwordCount * 4u, MaxRdnaImageNsaAddressComponents);
     const RdnaOperand plainBase = plainOperand(base);
-    if (GcnGuestShaders() && nsaComponents == 0u && plainBase.kind == RdnaOperandKind::VectorRegister) {
-        count = std::min({count + 3u, static_cast<std::uint32_t>(components.size()), 256u - plainBase.reg});
-    }
+    if (plainBase.kind == RdnaOperandKind::VectorRegister) count = ImageAddressVectorReads(inst, plainBase.reg);
     for (std::uint32_t index = 0; index < count; ++index) {
         if (index != 0u && index - 1u < nsaComponents) {
             vectorsRead.set(inst.imageNsaVectorRegisters[index - 1u] & 0xffu);

@@ -11,6 +11,8 @@
 
 namespace ShaderRecompiler {
 
+std::uint32_t ImageAddressVectorReads(const RdnaInstruction& inst, std::uint32_t baseReg);
+
 class TranslationContext {
 public:
     TranslationContext(IrProgram& program, IrBlock& block, std::uint32_t vectorLimit);
