@@ -97,6 +97,21 @@ std::optional<std::uint32_t> configuredResolution() {
     return resolutionIndex(width, height);
 }
 
+int configuredVblankHz() {
+    static const int hz = [] {
+        const char* value = std::getenv("ANYPS5_VBLANK_HZ");
+        if (value == nullptr || *value == '\0') return 0;
+        const char* end = value + std::strlen(value);
+        int parsed = 0;
+        const auto result = std::from_chars(value, end, parsed);
+        if (result.ec != std::errc{} || result.ptr != end || parsed < 1 || parsed > 1000) {
+            throw std::runtime_error(std::string("VideoOut: ANYPS5_VBLANK_HZ must be an integer from 1 to 1000, got \"") + value + "\"");
+        }
+        return parsed;
+    }();
+    return hz;
+}
+
 bool readHostClipboard(std::string& text) {
     if (SDL_HasClipboardText() != SDL_TRUE) return false;
     char* raw = SDL_GetClipboardText();
@@ -624,7 +639,7 @@ void VideoOutDriver::vblankEnd(std::uint64_t tick) {
         if (!cfg) continue;
         std::lock_guard cfgLock(cfg->mutex);
         if (!cfg->opened || cfg->failure) continue;
-        if (cfg->outputMode != VIDEO_OUT_OUTPUT_MODE_119_88HZ && tick % 2 != 0) continue;
+        if (cfg->outputMode != VIDEO_OUT_OUTPUT_MODE_119_88HZ && tick % 2 != 0 && configuredVblankHz() == 0) continue;
         require(cfg->vblankStatus.count != std::numeric_limits<uint64_t>::max(), "vblank counter overflow");
         ++cfg->preVblankStatus.count;
         cfg->preVblankStatus.processTime = sceKernelGetProcessTime();
@@ -933,8 +948,10 @@ void VideoOutDriver::vblankLoop(std::stop_token token) {
     using Frame = std::chrono::duration<int64_t, std::ratio<1001, 120000>>;
     const auto start = std::chrono::steady_clock::now();
     try {
+        const int64_t hz = configuredVblankHz();
         for (int64_t frame = 1; !token.stop_requested(); ++frame) {
-            const auto next = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(Frame(frame));
+            const auto next = start + (hz != 0 ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::nanoseconds(frame * 1'000'000'000LL / hz))
+                                               : std::chrono::duration_cast<std::chrono::steady_clock::duration>(Frame(frame)));
             const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(next - std::chrono::steady_clock::now()).count();
             if (remaining > 0) PreciseSleepUs(static_cast<unsigned long long>(remaining));
             {

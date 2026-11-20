@@ -1,0 +1,20 @@
+# God of War III Remastered (CUSA01715 01.00): engine frame rate up to 240 FPS.
+# Ported from SpartanPort's "Frame Rate Patch - 240 FPS" (kvicken, SpartanPort).
+# Run with ANYPS5_VBLANK_HZ=240 (or the display rate) so flips are not held to 60 Hz.
+format = 1
+
+[[patch]]
+name        = "swing_energy_sixty"
+target      = "eboot.elf"
+va          = 0x8ff1a
+expected    = "488d055fdd3300"
+value       = "488d05b7c12600"
+description = "swing energy reads the 60.0 constant at 0x2fc0d8 instead of the frame rate, so it matches 60 Hz at any rate"
+
+[[patch]]
+name        = "engine_max_fps"
+target      = "eboot.elf"
+va          = 0x35dbe4
+expected    = "8fc26f42"
+value       = "00007043"
+description = "engine maximum frame rate 59.94 -> 240.0 (frametime clamp 1/240 s)"
