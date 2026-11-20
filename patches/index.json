@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "entries": [
+    {
+      "id": "gow3-high-fps",
+      "titleId": "CUSA01715",
+      "contentVersion": "01.00",
+      "patch": "CUSA01715-high-fps.toml",
+      "targets": {
+        "eboot.elf": "8e7cdbb98dd94a06b534572356b9aec62459d636eadac19b9360855b533f7e53"
+      },
+      "name": "God of War III Remastered high frame rate",
+      "category": "fps",
+      "description": "Raises the engine frame rate cap from 59.94 to 240 FPS and keeps swing energy at its 60 Hz value",
+      "notes": "Frame rates are unlocked by default. For playable QTEs and the Realm of Hades wall seam above 60 FPS, also preload CUSA01715-high-fps.c built as a library (build line at its top)",
+      "contributors": [
+        "kvicken",
+        "SpartanPort"
+      ],
+      "source": "https://github.com/FelipePrado0/SpartanPort/blob/main/patches/CUSA01623.xml"
+    }
+  ]
+}

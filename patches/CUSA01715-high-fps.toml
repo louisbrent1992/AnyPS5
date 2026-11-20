@@ -1,6 +1,6 @@
 # God of War III Remastered (CUSA01715 01.00): engine frame rate up to 240 FPS.
 # Ported from SpartanPort's "Frame Rate Patch - 240 FPS" (kvicken, SpartanPort).
-# Run with ANYPS5_VBLANK_HZ=240 (or the display rate) so flips are not held to 60 Hz.
+# AnyPS5 runs vblanks at the display rate by default. Preload CUSA01715-high-fps.c for the QTE and wall seam fixes.
 format = 1
 
 [[patch]]
