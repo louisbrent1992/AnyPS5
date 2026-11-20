@@ -87,7 +87,8 @@ struct SurfaceGeometry {
 SurfaceGeometry DescribeSurface(const GuestTextureResource& descriptor);
 std::uint64_t DescribeSurfaceGuestBytes(const GuestTextureResource& descriptor);
 std::uint64_t SurfaceGuestBytes(const GuestTextureResource& descriptor);
-std::vector<TileMipLayout> ComputeGcnMipLayout(TextureTileMode tileMode, std::uint32_t format, std::uint32_t width, std::uint32_t height, std::uint32_t pitch, bool pow2Pad, std::uint32_t mipCount, bool linearGeneral = false, std::uint32_t layers = 1, bool volume = false);
+std::vector<TileMipLayout> ComputeGcnMipLayout(TextureTileMode tileMode, std::uint32_t format, std::uint32_t width, std::uint32_t height, std::uint32_t pitch, bool pow2Pad, std::uint32_t mipCount, bool linearGeneral = false, std::uint32_t layers = 1, bool volume = false, std::uint32_t samples = 1);
+inline constexpr std::uint32_t GcnSampleShift = 24u;
 struct GcnTileGeometry {
     std::uint32_t blockBytes;
     std::uint32_t blockWidth;

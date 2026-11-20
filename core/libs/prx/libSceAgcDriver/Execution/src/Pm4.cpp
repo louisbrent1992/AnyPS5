@@ -515,7 +515,10 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
                 case 0x38:
                     graphics();
                     size(4);
-                    require(eventIndex == 1 && packet[3] == 0u && (packet[2] & 0x1ffu) == 0u && ((packet[2] >> 9u) & 3u) == 2u && ((packet[2] >> 11u) & 0xffffu) == (1u << SampleDumpBlockCount()) - 1u && (packet[2] >> 27u) == 0u, "PIXEL_PIPE_STAT_CONTROL other than counter 0 at a 16-byte stride over every DB is not implemented");
+                    require(eventIndex == 1, "invalid pixel pipe statistics control event index");
+                    require((packet[2] & ~0x07fffff8u) == 0 && packet[3] == 0, "unsupported PIXEL_PIPE_STAT_CONTROL reserved bits");
+                    require(((packet[2] >> 3u) & 0x3fu) == 0, "PIXEL_PIPE_STAT_CONTROL counters other than occlusion count 0 are not implemented");
+                    require(((packet[2] >> 9u) & 3u) == 2, "PIXEL_PIPE_STAT_CONTROL dump strides other than 128 bits are not implemented");
                     break;
                 case 0x39:
                     graphics();
@@ -718,26 +721,8 @@ std::size_t ConditionalWords(std::span<const std::uint32_t> packet) {
     return packet[4] & ConditionalWordsMask;
 }
 
-std::uint64_t SampleDumpBlockCount() {
-    if (!ShaderRecompiler::GcnGuestShaders()) return SampleDumpBlocks;
-    static const bool neo = [] {
-        constexpr std::uint32_t ParamSfoAttributeSupportNeoMode = 0x00800000u;
-        std::uint32_t attribute = 0;
-        try {
-            return GetAppParamSfoAttribute_nid_no_patch(&attribute) && (attribute & ParamSfoAttributeSupportNeoMode) != 0;
-        } catch (const std::exception&) {
-            return false;
-        }
-    }();
-    return neo ? 16u : 8u;
-}
-
-std::uint64_t SampleDumpSpan() {
-    return (SampleDumpBlockCount() - 1u) * SampleDumpStride + SampleDumpBlockBytes;
-}
-
 std::size_t PredicationBytes(const Predication& predication) {
-    if (predication.operation == 1) return SampleDumpSpan() + SampleDumpBlockBytes;
+    if (predication.operation == 1) return SampleDumpBytes + SampleDumpBlockBytes;
     return predication.operation == 3 ? 8 : 4;
 }
 
@@ -747,12 +732,14 @@ bool PredicationPasses(const QueueState& queue) {
     const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::Wait);
     if (predication.operation == 1) {
         constexpr std::uint64_t ready = 1ull << 63u;
-        std::array<std::uint64_t, SampleDumpBlocks * SampleDumpStride / sizeof(std::uint64_t)> words{};
-        GuestMemory::Read(predication.address, std::as_writable_bytes(std::span(words)).first(PredicationBytes(predication)), 8);
+        require(queue.sampleDumpBlocks != 0, "Z-pass predication with no counter block enabled by PIXEL_PIPE_STAT_CONTROL is not implemented");
         std::uint64_t samples = 0;
-        for (std::uint64_t db = 0; db < SampleDumpBlockCount(); ++db) {
-            const auto begin = words[db * SampleDumpStride / sizeof(std::uint64_t)];
-            const auto end = words[db * SampleDumpStride / sizeof(std::uint64_t) + 1];
+        for (std::uint64_t db = 0; db < SampleDumpBlocks; ++db) {
+            if (((queue.sampleDumpBlocks >> db) & 1u) == 0) continue;
+            std::array<std::uint64_t, 2> pair{};
+            GuestMemory::Read(predication.address + db * SampleDumpStride, std::as_writable_bytes(std::span(pair)), 8);
+            const auto begin = pair[0];
+            const auto end = pair[1];
             if ((begin & ready) == 0 || (end & ready) == 0) {
                 require(predication.runWhenUnwritten, "Z-pass predication waits for a counter pair that was never written");
                 return true;
@@ -921,7 +908,7 @@ std::vector<PacketStore> DecodeStores(std::span<const std::uint32_t> packet) {
             if (!SampleDump(packet)) return {};
             require(packet.size() == 4, "invalid EVENT_WRITE sample dump size");
             std::vector<PacketStore> stores;
-            for (std::uint64_t block = 0; block < SampleDumpBlockCount(); ++block) stores.push_back(runTime(SampleDumpAddress(packet) + block * SampleDumpStride, SampleDumpBlockBytes));
+            for (std::uint64_t block = 0; block < SampleDumpBlocks; ++block) stores.push_back(runTime(SampleDumpAddress(packet) + block * SampleDumpStride, SampleDumpBlockBytes));
             return stores;
         }
         default: return {};
@@ -1252,6 +1239,10 @@ void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
         case 0x2a: queue.indexType = packet[1]; return;
         case 0x91: executeIndexAttributes(readIndexAttributes(packet), queue); return;
         case 0x2f: queue.instanceCount = packet[1]; return;
+        case 0x46:
+            if (!SampleControl(packet)) throw std::runtime_error("packet requires driver execution");
+            queue.sampleDumpBlocks = SampleControlBlocks(packet);
+            return;
         case 0x63: case 0x64: case 0x9f:
             ExecuteIndirectRegisters(packet, ReadIndirectRegisters(packet), queue);
             return;
@@ -1405,4 +1396,18 @@ void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
     }
 }
 
+}
+
+std::uint32_t AgcDriver::DefaultSampleDumpBlocks() {
+    if (!ShaderRecompiler::GcnGuestShaders()) return AllSampleDumpBlocks;
+    static const bool neo = [] {
+        constexpr std::uint32_t ParamSfoAttributeSupportNeoMode = 0x00800000u;
+        std::uint32_t attribute = 0;
+        try {
+            return GetAppParamSfoAttribute_nid_no_patch(&attribute) && (attribute & ParamSfoAttributeSupportNeoMode) != 0;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }();
+    return neo ? AllSampleDumpBlocks : 0xffu;
 }
