@@ -7608,6 +7608,8 @@ void verifyLanesOutsideHostSubgroup() {
     require(pixel(lane31, 32u), "host lanes: a wave64 pixel program did not build reading lane 31 of a 32-lane subgroup");
     expectFailure([&] { static_cast<void>(pixel(lane31, 8u)); }, "v_readlane_b32 of lane 31 is outside the 8-lane host subgroup", "host lanes: a wave64 pixel program read lane 31 of an 8-lane subgroup");
     require(pixel(lane63, 64u), "host lanes: a wave64 pixel program did not build reading lane 63 of a 64-lane subgroup");
+    static constexpr std::array<std::uint32_t, 29> swizzleButterfly{0xbeea287eu, 0x02020080u, 0xd8d4401fu, 0x02000001u, 0xbf8c007fu, 0x38020501u, 0xd8d4201fu, 0x02000001u, 0xbf8c007fu, 0x38020501u, 0xd8d4101fu, 0x02000001u, 0xbf8c007fu, 0x38020501u, 0xd8d4081fu, 0x02000001u, 0xbf8c007fu, 0x38020501u, 0xd8d4041fu, 0x02000001u, 0xbf8c007fu, 0x38020501u, 0xd7600006u, 0x00014101u, 0xbefe046au, 0x7e020206u, 0xf800180fu, 0x01010101u, 0xbf810000u};
+    require(pixel(swizzleButterfly, 32u), "host lanes: a ds_swizzle_b32 xor-butterfly OR reduction read at lane 32 did not build on a 32-lane subgroup");
     require(compute(computeLane63, 32u), "host lanes: a wave64 compute program did not build reading lane 63 at two lanes per invocation");
     require(compute(computeLane63, 8u), "host lanes: a wave64 compute program did not build reading lane 63 of an 8-lane subgroup");
     require(pixel(waterfall, 32u) && pixel(waterfall, 8u), "host lanes: an s_ff1_i32_b64 waterfall reading a lane in a register did not build");

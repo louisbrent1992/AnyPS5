@@ -131,6 +131,21 @@ void Vop3FormsOfMappedVop2AndVopcDecode() {
     Check(Decode(cmpsTruF64).op == RdnaOpcode::VCmpTruF64, "VOP3 v_cmps_tru_f64 did not decode as v_cmp_tru_f64");
 }
 
+void BfiKeepsBitModifiers() {
+    const std::array<std::uint32_t, 3> bfi{0xd294000eu, 0x843a1d0au, 0xbf810000u};
+    const auto insert = Decode(bfi);
+    Check(insert.op == RdnaOpcode::VBfiB32, "VOP3 v_bfi_b32 did not decode as its RDNA opcode");
+    Check(insert.source2.negate && !insert.source0.negate && !insert.source1.negate, "VOP3 v_bfi_b32 lost the negate on its third source");
+    const std::array<std::uint32_t, 3> clamped{0xd294080eu, 0x043a1d0au, 0xbf810000u};
+    bool rejected = false;
+    try {
+        static_cast<void>(Decode(clamped));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    Check(rejected, "VOP3 v_bfi_b32 with clamp was accepted");
+}
+
 }
 
 int main() {
@@ -141,6 +156,7 @@ int main() {
         SopkComparesAndAdd();
         SmrdLiteralOffset();
         Vop3FormsOfMappedVop2AndVopcDecode();
+        BfiKeepsBitModifiers();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;

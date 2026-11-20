@@ -2347,6 +2347,16 @@ void EmitSetAttribute(SpirvValueEmitContext& ctx, const IrValue& inst) {
             EmitAuxPositionExport(ctx, data, exp);
             return;
         }
+        if (exp.kind == ExportTargetKind::MrtZ && exp.compr) {
+            if ((exp.en & 3u) != 0u && (state.depthVariable != 0u || state.stencilRefVariable != 0u)) FailEmit("a 16-bit (compressed) MRTZ export of depth or stencil is not implemented");
+            if ((exp.en & 0xcu) != 0u && state.sampleMaskVariable != 0u) {
+                const auto mask = EmitAndConstant(state, ExportRawComponent(ctx, data, 1), 0xffffu);
+                const auto value = state.module.AllocateId();
+                state.module.AddFunction(spv::OpBitcast, TypeI32(state), value, mask);
+                StoreCombinedCoverage(state, value, state.exportedCoverageVariable, state.alphaCoverageVariable);
+            }
+            return;
+        }
         if (exp.kind == ExportTargetKind::MrtZ) {
             if ((exp.en & 1u) != 0u && state.depthVariable != 0u) {
                 const auto raw = ExportRawComponent(ctx, data, 0);

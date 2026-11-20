@@ -1088,6 +1088,8 @@ bool CrossesElectedMaxScan(const IrValue& permlane, const IrProgram& program) {
     return crossed && std::ranges::all_of(masked, [&](const IrValue* atomic) { return std::ranges::find(elected, atomic) != elected.end(); });
 }
 
+std::optional<std::uint32_t> EmitScanReduction(SpirvValueEmitContext& ctx, const IrValue& inst, std::uint32_t lane, const HalfWaveScan* scan, bool narrow);
+
 std::optional<std::uint32_t> EmitHalfWaveReduction(SpirvValueEmitContext& ctx, const IrValue& inst, std::uint32_t lane) {
     auto& state = ctx.state;
     if (state.program.WaveSize() != 64u || (lane & 31u) != 31u || state.spannedWave) return std::nullopt;
@@ -1099,6 +1101,47 @@ std::optional<std::uint32_t> EmitHalfWaveReduction(SpirvValueEmitContext& ctx, c
     const bool narrow = !scan && HostSubgroupNarrowerThanWave(state) && state.hostSubgroupSize == 32u;
     if (narrow) scan = MatchHalfWaveScan(inst.Argument(0), stage, true);
     if (!scan) return std::nullopt;
+    return EmitScanReduction(ctx, inst, lane, &*scan, narrow);
+}
+
+std::optional<HalfWaveScan> MatchSwizzleHalfWaveScan(const IrValue* value, IrShaderStage stage, bool narrow) {
+    for (const auto& reduction : WaveReductions) {
+        const IrValue* scan = Unmasked(Resolved(value), narrow);
+        bool matched = true;
+        for (const auto xorMask : {1u, 2u, 4u, 8u, 16u}) {
+            const auto operands = ReductionOperands(scan, reduction);
+            const IrValue* own = nullptr;
+            if (!operands || !EitherOrder(*operands, [&](const IrValue* candidate, const IrValue* swapped) {
+                    const auto* swizzle = Unmasked(swapped, narrow);
+                    own = candidate;
+                    return Is(swizzle, IrOpcode::SwizzleU32) && Resolved(swizzle->Argument(0)) == candidate && IsU32(swizzle->Argument(1), 0x1fu | (xorMask << 10u)) && EveryLaneBit(swizzle->Argument(2), narrow);
+                })) {
+                matched = false;
+                break;
+            }
+            scan = Unmasked(own, narrow);
+        }
+        if (!matched) continue;
+        const bool selectedKeys = Is(scan, IrOpcode::SelectU32) && IsU32(scan->Argument(2), reduction.identity);
+        const bool upperKeys = narrow && reduction.identity == 0u && !reduction.floating && UpperLaneWalk{stage}.ZeroValue(scan);
+        if (!selectedKeys && !upperKeys) return std::nullopt;
+        return HalfWaveScan{&reduction, scan};
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> EmitSwizzleHalfWaveReduction(SpirvValueEmitContext& ctx, const IrValue& inst, std::uint32_t lane) {
+    auto& state = ctx.state;
+    if (state.program.WaveSize() != 64u || state.spannedWave || !HostSubgroupNarrowerThanWave(state) || state.hostSubgroupSize != 32u) return std::nullopt;
+    const auto stage = state.program.Resources().stage;
+    auto scan = MatchSwizzleHalfWaveScan(inst.Argument(0), stage, false);
+    if (!scan) scan = MatchSwizzleHalfWaveScan(inst.Argument(0), stage, true);
+    if (!scan) return std::nullopt;
+    return EmitScanReduction(ctx, inst, lane, &*scan, true);
+}
+
+std::optional<std::uint32_t> EmitScanReduction(SpirvValueEmitContext& ctx, const IrValue& inst, std::uint32_t lane, const HalfWaveScan* scan, bool narrow) {
+    auto& state = ctx.state;
     if (scan->reduction->floating) {
         if (lane < 32u || state.hostSubgroupSize > 32u) return std::nullopt;
         return ConstantU32(state, scan->reduction->identity);
@@ -1803,6 +1846,7 @@ std::uint32_t EmitReadLane(SpirvValueEmitContext& ctx, const IrValue& inst) {
     if (selector != nullptr && selector->HasImmediate() && state.program.Resources().stage != IrShaderStage::Compute && state.laneCount == 1u) {
         const auto index = selector->ImmediateU32() & (state.program.WaveSize() - 1u);
         if (const auto reduced = EmitHalfWaveReduction(ctx, inst, index)) return *reduced;
+        if (const auto reduced = EmitSwizzleHalfWaveReduction(ctx, inst, index)) return *reduced;
         if (const auto reduced = EmitRowReduction(ctx, inst, index)) return *reduced;
         if (HostSubgroupNarrowerThanWave(state) && index >= state.hostSubgroupSize) {
             if (index >= 32u && UpperLaneWalk{state.program.Resources().stage}.ZeroValue(inst.Argument(0))) return ConstantU32(state, 0u);

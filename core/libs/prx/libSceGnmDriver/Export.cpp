@@ -210,7 +210,7 @@ int CheckSubmission(std::uint32_t count, std::uint32_t* const* dcbs, const std::
 }
 
 bool IsFiller(std::uint32_t header) {
-    return (header >> 30) == 2;
+    return AgcDriver::Pm4::FillerPacket(header);
 }
 
 }
@@ -409,6 +409,7 @@ ComputeRing& MappedRing(std::uint32_t id, const char* unmapped) {
 // While the draw engine is stalled on an unreleased REWIND, later submissions and sceGnmSubmitDone
 // wait behind it, in order, as they would on the console's ring; the submitting thread does not.
 std::optional<GnmDriver::RewindTail> g_rewindTail;
+bool g_rewindWaiter = false;
 std::deque<std::function<void()>> g_behindRewind;
 
 void SubmitMerged(std::vector<std::uint32_t>& commands) {
@@ -474,10 +475,12 @@ void SubmitLocked(std::uint32_t count, std::uint32_t* const* dcbs, const std::ui
         if (!tail.control) continue;
         g_rewindTail = tail;
         if (i + 1 < count) SubmitLocked(count - i - 1, dcbs + i + 1, dcbBytes + i + 1, ccbs ? ccbs + i + 1 : nullptr, ccbBytes ? ccbBytes + i + 1 : nullptr);
-        // ponytail: one detached waiter per stall; the GPU-side ring thread if stalls become frequent.
+        if (g_rewindWaiter) return;
+        g_rewindWaiter = true;
         std::thread([] {
             std::lock_guard lock(g_submitMutex);
             ReleaseRewindTails();
+            g_rewindWaiter = false;
         }).detach();
         return;
     }
@@ -939,9 +942,9 @@ int APS5_VABI sceGnmDingDong(std::uint32_t id, std::uint32_t nextOffsetInDwords)
     std::vector<std::uint32_t> words;
     for (auto at = ring.writeOffset; at != nextOffsetInDwords; at = (at + 1) & (ring.size - 1)) words.push_back(ring.words[at]);
     std::vector<std::uint32_t> lowered;
-    for (std::size_t at = 0; at < words.size();) {
-        if (!IsFiller(words[at]) && (words[at] >> 30) == 3 && ((words[at] >> 16) & 0x3fffu) + 2 > words.size() - at)
-            NotImplemented_nid_no_patch("sceGnmDingDong with an offset inside a packet");
+    std::size_t at = 0;
+    while (at < words.size()) {
+        if (!IsFiller(words[at]) && (words[at] >> 30) == 3 && ((words[at] >> 16) & 0x3fffu) + 2 > words.size() - at) break;
         const auto packet = GnmDriver::PacketAt(words, at, "compute ring");
         if (!IsFiller(packet[0]) && Opcode(packet[0]) == OpRewind) NotImplemented_nid_no_patch("sceGnmDingDong with a REWIND packet in the ring");
         at += packet.size();
@@ -951,8 +954,8 @@ int APS5_VABI sceGnmDingDong(std::uint32_t id, std::uint32_t nextOffsetInDwords)
         const Packet packet{lowered.data(), static_cast<std::uint32_t>(lowered.size()), 0, {}};
         sceAgcDriverSubmitAcb(FirstComputeQueue + id - 1, &packet);
     }
-    ring.writeOffset = nextOffsetInDwords;
-    *ring.readOffset = nextOffsetInDwords;
+    ring.writeOffset = static_cast<std::uint32_t>((ring.writeOffset + at) & (ring.size - 1));
+    *ring.readOffset = ring.writeOffset;
     return 0;
 }
 

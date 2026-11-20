@@ -9,6 +9,7 @@
 #endif
 #include <windows.h>
 #endif
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -18,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -166,6 +168,27 @@ void TestFrameBoundaryWait() {
     Require(labels.second == 1, "the second submission did not run");
 }
 
+void TestChainedRewinds() {
+    GuestBlock block;
+    auto& labels = block.Data();
+    std::vector<std::uint32_t> first{Type3(0x59, 1), 0u, Type3(OpNop, 1), 0u};
+    std::vector<std::uint32_t> second{Type3(0x59, 1), 0u, Type3(0x59, 1), 0u};
+    WriteData(second, &labels.first, 1);
+    const auto release = [](std::vector<std::uint32_t>& words, std::size_t at) { std::atomic_ref<std::uint32_t>(words[at]).store(0x80000000u, std::memory_order_release); };
+    Require(Submit(first) == 0, "the submission ending in an unreleased REWIND failed");
+    Require(Submit(second) == 0, "the submission queued behind an unreleased REWIND failed");
+    release(first, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    release(second, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    AgcDriverWaitIdle_nid_postfix();
+    Require(labels.first == 0, "the words behind a REWIND reached through a queued submission ran before that REWIND was released");
+    release(second, 3);
+    for (int tries = 0; tries < 500 && labels.first != 1; ++tries) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    AgcDriverWaitIdle_nid_postfix();
+    Require(labels.first == 1, "the words behind the last REWIND did not run after it was released");
+}
+
 void EnableSubmitWaitIdle() {
 #ifdef _WIN32
     _putenv_s("APS5_GNM_SUBMIT_WAIT_IDLE", "1");
@@ -190,6 +213,7 @@ int main(int argc, char** argv) {
         device.reset();
         EnableSubmitWaitIdle();
         TestFrameBoundaryWait();
+        TestChainedRewinds();
         std::puts("GnmDriver submission wait tests passed");
         return 0;
     } catch (const std::exception& error) {

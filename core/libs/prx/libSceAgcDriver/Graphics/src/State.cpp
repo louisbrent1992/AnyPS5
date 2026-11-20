@@ -335,7 +335,7 @@ bool vertexControlSupported(std::uint32_t word) {
 constexpr std::uint32_t ClipControlMask = ~(0x10000u | 0x80000u | 0x01000000u | 0x0c000000u);
 
 bool zFormatSupported(std::uint32_t format) {
-    return format == 0u || format == 1u || format == 2u || format == 3u || format == 9u;
+    return format == 0u || format == 1u || format == 2u || format == 3u || format == 7u || format == 9u;
 }
 
 std::uint32_t shaderControlMask(std::uint32_t zFormat) {
@@ -344,9 +344,9 @@ std::uint32_t shaderControlMask(std::uint32_t zFormat) {
     constexpr std::uint32_t stencilOpValExportEnable = 0x4u;
     constexpr std::uint32_t maskExportEnable = 0x100u;
     auto mask = ShaderControlMask;
-    if (zFormat != 0u && zFormatSupported(zFormat)) mask &= ~zExportEnable;
+    if (zFormat != 0u && zFormat != 7u && zFormatSupported(zFormat)) mask &= ~zExportEnable;
     if (zFormat == 2u || zFormat == 9u) mask &= ~(stencilTestValExportEnable | stencilOpValExportEnable);
-    if (zFormat == 9u) mask &= ~maskExportEnable;
+    if (zFormat == 7u || zFormat == 9u) mask &= ~maskExportEnable;
     return mask;
 }
 
@@ -633,7 +633,7 @@ void decodeDepthBias(const Registers& cx, std::uint32_t raster, State& result) {
     const bool frontBias = (raster & 0x800u) != 0;
     const bool backBias = (raster & 0x1000u) != 0;
     if (!(front && frontBias) && !(back && backBias)) return;
-    const bool perFace = front && back && (frontBias != backBias || read(cx, 0x2e0) != read(cx, 0x2e2) || read(cx, 0x2e1) != read(cx, 0x2e3));
+    const bool perFace = front && back && (frontBias != backBias || (frontBias && backBias && (read(cx, 0x2e0) != read(cx, 0x2e2) || read(cx, 0x2e1) != read(cx, 0x2e3))));
     const bool d16 = result.depth->format == VK_FORMAT_D16_UNORM || result.depth->format == VK_FORMAT_D16_UNORM_S8_UINT;
     const auto format = find(cx, 0x2de) == cx.end() ? (d16 ? 0xf0u : 0x1e9u) : read(cx, 0x2de);
     if (format != (d16 ? 0xf0u : 0x1e9u)) throw std::runtime_error("AGC graphics: " + zeroMessage(0x2de, format, "depth bias in units other than the depth format"));

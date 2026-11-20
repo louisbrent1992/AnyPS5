@@ -3472,9 +3472,12 @@ void ZExportTests() {
     Require(!AgcDriver::Graphics::DrawRejection(withExports(0, zExportEnable), true).empty(), "a Z export without a Z format was accepted");
     Require(AgcDriver::Graphics::DrawRejection(withExports(9, zExportEnable | maskExportEnable), true).empty(), "a sample-mask export with 32_ABGR was rejected");
     Require(!AgcDriver::Graphics::DrawRejection(withExports(1, zExportEnable | maskExportEnable), true).empty(), "a sample-mask export with 32_R was accepted");
-    for (std::uint32_t format = 4; format <= 8; ++format) {
+    for (const std::uint32_t format : {4u, 5u, 6u, 8u}) {
         Require(!AgcDriver::Graphics::DrawRejection(withExports(format, 0), true).empty(), "Z format " + std::to_string(format) + " was accepted");
     }
+    Require(AgcDriver::Graphics::DrawRejection(withExports(7, maskExportEnable), true).empty(), "a sample-mask export with UINT16_ABGR was rejected");
+    Require(AgcDriver::Graphics::DrawRejection(withExports(7, 0), true).empty(), "UINT16_ABGR without exports was rejected");
+    Require(!AgcDriver::Graphics::DrawRejection(withExports(7, zExportEnable), true).empty(), "a Z export with UINT16_ABGR was accepted");
     auto absent = withExports(0, 0);
     absent.context.erase(0x1c4);
     Require(AgcDriver::Graphics::DrawRejection(absent, true).empty(), "a missing SPI_SHADER_Z_FORMAT was rejected (or threw) in the precheck");
@@ -3541,6 +3544,13 @@ void DepthBoundsBiasTests() {
     queue.context[0x205] = 0x00000a48u;
     state = AgcDriver::Graphics::DecodeState(queue);
     Require(state.depthBias && state.depthBiasPerFace && state.depthBiasConstant == 4.0f && state.backDepthBiasSlope == 0.0f && state.backDepthBiasConstant == 0.0f, "back faces without depth bias must draw unbiased");
+    {
+        auto frontOnly = queue;
+        frontOnly.context.erase(0x2e2);
+        frontOnly.context.erase(0x2e3);
+        state = AgcDriver::Graphics::DecodeState(frontOnly);
+        Require(state.depthBias && state.depthBiasPerFace && state.depthBiasConstant == 4.0f && state.backDepthBiasConstant == 0.0f, "front-only depth bias must not need the back-face offset registers");
+    }
     queue.context[0x205] = 0x00001248u;
     state = AgcDriver::Graphics::DecodeState(queue);
     Require(state.depthBias && state.depthBiasPerFace && state.depthBiasSlope == 0.0f && state.depthBiasConstant == 0.0f && state.backDepthBiasConstant == 8.0f, "front faces without depth bias must draw unbiased");

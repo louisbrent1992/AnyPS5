@@ -157,6 +157,13 @@ void TestComputeQueues() {
     Require(memory.wrapped == 3, "a packet that wraps past the end of the ring did not run");
     Require(memory.readA == offset, "the read offset did not wrap");
 
+    words = {0xffff1000u, 0xffff1000u};
+    WriteData(words, &memory.direct, 7);
+    offset = Put(memory.ringA, offset, words);
+    Require(sceGnmDingDong(first, offset) == 0, "sceGnmDingDong behind one-dword NOP pads failed");
+    AgcDriverWaitIdle_nid_postfix();
+    Require(memory.direct == 7 && memory.readA == offset, "a WRITE_DATA behind one-dword NOP pads (type 3 NOP with count 0x3fff) did not run or was not consumed");
+
     const int second = sceGnmMapComputeQueue(0, 1, memory.ringB, RingWords, &memory.readB);
     Require(second > 0 && second != first, "a second ring did not get its own queue id");
     words.clear();
@@ -179,13 +186,15 @@ void TestComputeQueues() {
     words.clear();
     WriteData(words, &memory.wrapped, 6);
     const auto packetEnd = Put(memory.ringA, offset, words);
-    Require(ExpectFailure([&] { sceGnmDingDong(first, (offset + 3) % RingWords); }).find("inside a packet") != std::string::npos,
-        "an offset inside a packet did not throw");
-    Require(memory.readA == offset && packetEnd != offset, "an offset inside a packet moved the read offset");
+    Require(sceGnmDingDong(first, (offset + 3) % RingWords) == 0, "sceGnmDingDong with an offset inside a packet failed");
+    AgcDriverWaitIdle_nid_postfix();
+    Require(memory.readA == offset && packetEnd != offset && memory.wrapped == 3, "an offset inside a packet ran the packet or moved the read offset past it");
+    Require(sceGnmDingDong(first, packetEnd) == 0, "sceGnmDingDong completing a packet failed");
+    Require(WaitFor(memory.wrapped, 6) && memory.readA == packetEnd, "the packet completed by a later sceGnmDingDong did not run");
     const auto rewindEnd = Put(memory.ringA, packetEnd, {Type3(0x59, 1), 0u});
     Require(ExpectFailure([&] { sceGnmDingDong(first, rewindEnd); }).find("REWIND") != std::string::npos, "a REWIND packet in the ring did not throw");
     AgcDriverWaitIdle_nid_postfix();
-    Require(memory.readA == offset && memory.wrapped == 3, "a ring with a REWIND packet was submitted in part");
+    Require(memory.readA == packetEnd && memory.wrapped == 6, "a ring with a REWIND packet was submitted in part");
 
     Require(ExpectFailure([&] { sceGnmMapComputeQueue(0, 0, memory.ringB, RingWords, &memory.readB); }).find("already mapped") != std::string::npos,
         "mapping a pipe and queue twice did not throw");
