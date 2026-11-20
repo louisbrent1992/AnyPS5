@@ -120,6 +120,10 @@ void MultisampledTargetsDecode() {
     const auto plain = Decode(2u, 2u, 0u);
     Check(plain.samples == 2u && plain.cmaskAddress == 0u, "a 2x GCN color target without compression took a CMASK");
     Check(Failure([] { Decode(4u, 4u, FastClear, false); }).find("has no CMASK address") != std::string::npos, "a 4x GCN fast clear without a CMASK address was accepted");
+    const auto single = Decode(1u, 1u, FastClear);
+    Check(single.samples == 1u && single.cmaskFastClear && single.cmaskAddress == AddressOf(cmaskMemory) && single.cmaskBytes == CmaskBytes, "a fast-cleared one-sample GCN color target lost its CMASK");
+    Check(Decode(1u, 1u, 0u).cmaskAddress == 0u, "a one-sample GCN color target without FAST_CLEAR took a CMASK");
+    Check(Failure([] { Decode(1u, 1u, FastClear, false); }).find("has no CMASK address") != std::string::npos, "a one-sample GCN fast clear without a CMASK address was accepted");
 }
 
 void FewerFragmentsDecode() {

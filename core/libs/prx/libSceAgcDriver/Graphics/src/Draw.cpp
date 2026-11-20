@@ -581,9 +581,17 @@ void requireCmaskCodes(std::uint32_t codes) {
     Require((codes & 1u) == 0, "a CMASK fast clear of a DCC color target, whose clear belongs in its DCC keys, was recorded");
 }
 
+bool gcnCmask(const ColorTarget& color) {
+    return ColorTileModeIsGcn(color.tileMode);
+}
+
+std::size_t cmaskAlignment(const ColorTarget& color) {
+    return gcnCmask(color) ? 256u : CmaskLayout::Alignment;
+}
+
 CmaskState readCmask(const ColorTarget& color, const CmaskLayout& layout, std::vector<std::uint32_t>& cleared) {
     const auto address = color.cmaskAddress;
-    const auto bytes = layout.Bytes();
+    const auto bytes = gcnCmask(color) ? color.cmaskBytes : layout.Bytes();
     const bool locked = GuestMemory::GpuMutex().HeldByThisThread();
     auto* recorder = Recorder::Active();
     if (locked && recorder != nullptr && recorder->PendingWriteOverlaps(address, bytes)) {
@@ -599,7 +607,7 @@ CmaskState readCmask(const ColorTarget& color, const CmaskLayout& layout, std::v
         }
     }
     std::vector<std::byte> mask(bytes);
-    GuestMemory::Read(address, mask, CmaskLayout::Alignment);
+    GuestMemory::Read(address, mask, cmaskAlignment(color));
     const auto uniform = [&](std::byte value) { return std::all_of(mask.begin(), mask.end(), [&](std::byte entry) { return entry == value; }); };
     if (color.coverageSamples > color.samples) {
         for (std::uint32_t tileY = 0; tileY < layout.TilesY(); ++tileY) {
@@ -616,6 +624,7 @@ CmaskState readCmask(const ColorTarget& color, const CmaskLayout& layout, std::v
     }
     if (uniform(std::byte{0xff})) return CmaskState::Expanded;
     if (uniform(std::byte{0})) return CmaskState::Cleared;
+    Require(!gcnCmask(color), "a partially fast-cleared PS4 color target (a CMASK neither all cleared nor all expanded) is not implemented");
     for (std::uint32_t tileY = 0; tileY < layout.TilesY(); ++tileY) {
         for (std::uint32_t tileX = 0; tileX < layout.TilesX(); ++tileX) {
             const auto nibble = layout.Nibble(tileX, tileY);
@@ -667,15 +676,16 @@ bool materializeCmaskClear(const Context& context, const ColorTarget& color, con
     if (color.cmaskAddress == 0) return false;
     if (context.detiler != nullptr) requireCmaskCodes(context.detiler->CmaskErrors());
     const CmaskLayout layout(color.extent.width, color.extent.height);
-    const auto bytes = layout.Bytes();
-    Require(color.cmaskBytes == bytes, "CMASK size differs from the color target's CMASK layout");
+    const bool gcn = gcnCmask(color);
+    const auto bytes = gcn ? color.cmaskBytes : layout.Bytes();
+    Require(gcn || color.cmaskBytes == bytes, "CMASK size differs from the color target's CMASK layout");
     if (cmaskProved(color.cmaskAddress, bytes)) return false;
     if (color.coverageSamples > color.samples) {
         std::vector<std::uint32_t> codes;
         static_cast<void>(readCmask(color, layout, codes));
     }
     auto* recorder = Recorder::Active();
-    if (resident != nullptr && context.detiler != nullptr && recorder != nullptr && GuestMemory::GpuMutex().HeldByThisThread()) {
+    if (!gcn && resident != nullptr && context.detiler != nullptr && recorder != nullptr && GuestMemory::GpuMutex().HeldByThisThread()) {
         const auto* import = HostImportFor(context, color.cmaskAddress, bytes);
         const auto view = import != nullptr ? resident->ElementView() : VK_NULL_HANDLE;
         if (view != VK_NULL_HANDLE) {
@@ -699,7 +709,7 @@ bool materializeCmaskClear(const Context& context, const ColorTarget& color, con
         if (resident != nullptr) resident->Refresh();
     }
     const std::vector<std::byte> expanded(bytes, std::byte{0xff});
-    GuestMemory::Write(color.cmaskAddress, expanded, CmaskLayout::Alignment);
+    GuestMemory::Write(color.cmaskAddress, expanded, cmaskAlignment(color));
     proveCmask(color.cmaskAddress, bytes, GuestMemory::CollectWrites(color.cmaskAddress, bytes));
     return filled;
 }
